@@ -1,6 +1,6 @@
-### `tf.contrib.metrics.confusion_matrix(predictions, labels, num_classes=None, name=None)` {#confusion_matrix}
+### `tf.contrib.metrics.confusion_matrix(predictions, labels, num_classes=None, dtype=tf.int32, name=None)` {#confusion_matrix}
 
-Computes the confusion matrix from predictions and labels
+Computes the confusion matrix from predictions and labels.
 
 Calculate the Confusion Matrix for a pair of prediction and
 label 1-D int arrays.
@@ -30,11 +30,12 @@ the same shape in order for this function to work.
 *  <b>`num_classes`</b>: The possible number of labels the classification task can
                have. If this value is not provided, it will be calculated
                using both predictions and labels array.
+*  <b>`dtype`</b>: Data type of the confusion matrix.
 *  <b>`name`</b>: Scope name.
 
 ##### Returns:
 
-  A l X l matrix represeting the confusion matrix, where l in the number of
+  A k X k matrix represeting the confusion matrix, where k is the number of
   possible labels in the classification task.
 
 ##### Raises:

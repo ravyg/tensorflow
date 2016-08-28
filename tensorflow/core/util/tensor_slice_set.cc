@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -166,6 +166,35 @@ bool TensorSliceSet::QueryMeta(
       return false;
     }
   }
+}
+
+Status RegisterTensorSlice(
+    const string& name, const TensorShape& shape, DataType type,
+    const string& tag, const TensorSlice& slice,
+    std::unordered_map<string, TensorSliceSet*>* tensor_slices) {
+  DCHECK_NE(tensor_slices, nullptr);
+  TensorSliceSet* tss = gtl::FindPtrOrNull(*tensor_slices, name);
+  // Create a tensor slice set if needed
+  if (!tss) {
+    tss = new TensorSliceSet(shape, type);
+    tensor_slices->insert(std::make_pair(name, tss));
+  } else {
+    // Check if the shapes match
+    TensorShape tss_shape(tss->shape());
+    if (!shape.IsSameSize(tss_shape)) {
+      return errors::Internal("Incompatible tensor shapes detected for tensor ",
+                              name, ": existing = ", tss_shape.DebugString(),
+                              ", new = ", shape.DebugString());
+    }
+    if (type != tss->type()) {
+      return errors::Internal("Incompatible tensor types detected for tensor ",
+                              name, ": existing = ",
+                              DataTypeString(tss->type()), ", new = ",
+                              DataTypeString(type));
+    }
+  }
+  // Register the tensor slices without the actual data.
+  return tss->Register(slice, tag, nullptr);
 }
 
 }  // namespace checkpoint

@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,8 +24,9 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
-
 NAN = float('nan')
+
+metrics = tf.contrib.metrics
 
 
 def _enqueue_vector(sess, queue, values, shape=None):
@@ -143,14 +144,14 @@ class StreamingMeanTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_mean(
+    mean, _ = metrics.streaming_mean(
         tf.ones([4, 3]),
         metrics_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [mean])
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_mean(
+    _, update_op = metrics.streaming_mean(
         tf.ones([4, 3]),
         updates_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
@@ -164,7 +165,7 @@ class StreamingMeanTest(tf.test.TestCase):
       _enqueue_vector(sess, values_queue, [-3.2, 4.0])
       values = values_queue.dequeue()
 
-      mean, update_op = tf.contrib.metrics.streaming_mean(values)
+      mean, update_op = metrics.streaming_mean(values)
 
       sess.run(tf.initialize_local_variables())
       for _ in range(4):
@@ -180,7 +181,7 @@ class StreamingMeanTest(tf.test.TestCase):
       _enqueue_vector(sess, values_queue, [-3.2, 4.0])
       values = values_queue.dequeue()
 
-      mean, update_op = tf.contrib.metrics.streaming_mean(values)
+      mean, update_op = metrics.streaming_mean(values)
 
       sess.run(tf.initialize_local_variables())
 
@@ -209,12 +210,139 @@ class StreamingMeanTest(tf.test.TestCase):
       _enqueue_vector(sess, weights_queue, [0, 0])
       weights = weights_queue.dequeue()
 
-      mean, update_op = tf.contrib.metrics.streaming_mean(values, weights)
+      mean, update_op = metrics.streaming_mean(values, weights)
 
       sess.run(tf.initialize_local_variables())
       for _ in range(4):
         sess.run(update_op)
       self.assertAlmostEqual(-0.8, sess.run(mean), 5)
+
+
+class StreamingMeanTensorTest(tf.test.TestCase):
+
+  def setUp(self):
+    tf.reset_default_graph()
+
+  def testMetricsCollection(self):
+    my_collection_name = '__metrics__'
+    mean, _ = metrics.streaming_mean_tensor(
+        tf.ones([4, 3]),
+        metrics_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [mean])
+
+  def testUpdatesCollection(self):
+    my_collection_name = '__updates__'
+    _, update_op = metrics.streaming_mean_tensor(
+        tf.ones([4, 3]),
+        updates_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
+
+  def testAllValuesPresent(self):
+    with self.test_session() as sess:
+      values_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, values_queue, [0, 1])
+      _enqueue_vector(sess, values_queue, [-4.2, 9.1])
+      _enqueue_vector(sess, values_queue, [6.5, 0])
+      _enqueue_vector(sess, values_queue, [-3.2, 4.0])
+      values = values_queue.dequeue()
+
+      mean, update_op = metrics.streaming_mean_tensor(values)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(4):
+        sess.run(update_op)
+      self.assertAllClose([[-0.9/4., 3.525]], sess.run(mean))
+
+  def testAllValuesPresentMultiDimensional(self):
+    with self.test_session() as sess:
+      values_queue = tf.FIFOQueue(2, dtypes=tf.float32, shapes=(2, 2, 2))
+      _enqueue_vector(sess,
+                      values_queue,
+                      [[[1, 2], [1, 2]], [[1, 2], [1, 2]]],
+                      shape=(2, 2, 2))
+      _enqueue_vector(sess,
+                      values_queue,
+                      [[[1, 2], [1, 2]], [[3, 4], [9, 10]]],
+                      shape=(2, 2, 2))
+      values = values_queue.dequeue()
+
+      mean, update_op = metrics.streaming_mean_tensor(values)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(2):
+        sess.run(update_op)
+      self.assertAllClose([[[1, 2], [1, 2]], [[2, 3], [5, 6]]],
+                          sess.run(mean))
+
+  def testUpdateOpsReturnsCurrentValue(self):
+    with self.test_session() as sess:
+      values_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, values_queue, [0, 1])
+      _enqueue_vector(sess, values_queue, [-4.2, 9.1])
+      _enqueue_vector(sess, values_queue, [6.5, 0])
+      _enqueue_vector(sess, values_queue, [-3.2, 4.0])
+      values = values_queue.dequeue()
+
+      mean, update_op = metrics.streaming_mean_tensor(values)
+
+      sess.run(tf.initialize_local_variables())
+
+      self.assertAllClose([[0, 1]], sess.run(update_op), 5)
+      self.assertAllClose([[-2.1, 5.05]], sess.run(update_op), 5)
+      self.assertAllClose([[2.3/3., 10.1/3.]], sess.run(update_op), 5)
+      self.assertAllClose([[-0.9/4., 3.525]], sess.run(update_op), 5)
+
+      self.assertAllClose([[-0.9/4., 3.525]], sess.run(mean), 5)
+
+  def testMissingValues(self):
+    with self.test_session() as sess:
+      # Create the queue that populates the values.
+      values_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, values_queue, [0, 1])
+      _enqueue_vector(sess, values_queue, [-4.2, 9.1])
+      _enqueue_vector(sess, values_queue, [6.5, 0])
+      _enqueue_vector(sess, values_queue, [-3.2, 4.0])
+      values = values_queue.dequeue()
+
+      # Create the queue that populates the missing labels.
+      weights_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, weights_queue, [1, 1])
+      _enqueue_vector(sess, weights_queue, [1, 0])
+      _enqueue_vector(sess, weights_queue, [0, 1])
+      _enqueue_vector(sess, weights_queue, [0, 0])
+      weights = weights_queue.dequeue()
+
+      mean, update_op = metrics.streaming_mean_tensor(values, weights)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(4):
+        sess.run(update_op)
+      self.assertAllClose([[-2.1, 0.5]], sess.run(mean), 5)
+
+  def testMissingValuesAllMissing(self):
+    with self.test_session() as sess:
+      # Create the queue that populates the values.
+      values_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, values_queue, [0, 1])
+      _enqueue_vector(sess, values_queue, [-4.2, 9.1])
+      _enqueue_vector(sess, values_queue, [6.5, 0])
+      _enqueue_vector(sess, values_queue, [-3.2, 4.0])
+      values = values_queue.dequeue()
+
+      # Create the queue that populates the missing labels.
+      weights_queue = tf.FIFOQueue(4, dtypes=tf.float32, shapes=(1, 2))
+      _enqueue_vector(sess, weights_queue, [0, 1])
+      _enqueue_vector(sess, weights_queue, [0, 0])
+      _enqueue_vector(sess, weights_queue, [0, 1])
+      _enqueue_vector(sess, weights_queue, [0, 0])
+      weights = weights_queue.dequeue()
+
+      mean, update_op = metrics.streaming_mean_tensor(values, weights)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(4):
+        sess.run(update_op)
+      self.assertAllClose([[0, 0.5]], sess.run(mean), 5)
 
 
 class StreamingAccuracyTest(tf.test.TestCase):
@@ -224,7 +352,7 @@ class StreamingAccuracyTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_accuracy(
+    mean, _ = metrics.streaming_accuracy(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -232,7 +360,7 @@ class StreamingAccuracyTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_accuracy(
+    _, update_op = metrics.streaming_accuracy(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
@@ -242,19 +370,19 @@ class StreamingAccuracyTest(tf.test.TestCase):
     predictions = tf.ones((10, 3))
     labels = tf.ones((10, 4))
     with self.assertRaises(ValueError):
-      tf.contrib.metrics.streaming_accuracy(predictions, labels)
+      metrics.streaming_accuracy(predictions, labels)
 
   def testPredictionsAndWeightsOfDifferentSizeRaisesValueError(self):
     predictions = tf.ones((10, 3))
     labels = tf.ones((10, 3))
     weights = tf.ones((9, 3))
     with self.assertRaises(ValueError):
-      tf.contrib.metrics.streaming_accuracy(predictions, labels, weights)
+      metrics.streaming_accuracy(predictions, labels, weights)
 
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_uniform((10, 3), maxval=3, dtype=tf.int64, seed=1)
     labels = tf.random_uniform((10, 3), maxval=3, dtype=tf.int64, seed=1)
-    accuracy, update_op = tf.contrib.metrics.streaming_accuracy(
+    accuracy, update_op = metrics.streaming_accuracy(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -287,19 +415,20 @@ class StreamingAccuracyTest(tf.test.TestCase):
       _enqueue_vector(sess, labels_queue, [2])
       labels = labels_queue.dequeue()
 
-      accuracy, update_op = tf.contrib.metrics.streaming_accuracy(
+      accuracy, update_op = metrics.streaming_accuracy(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
-      for _ in range(4):
+      for _ in xrange(3):
         sess.run(update_op)
+      self.assertEqual(0.5, sess.run(update_op))
       self.assertEqual(0.5, accuracy.eval())
 
   def testEffectivelyEquivalentSizes(self):
     predictions = tf.ones((40, 1))
     labels = tf.ones((40,))
     with self.test_session() as sess:
-      accuracy, update_op = tf.contrib.metrics.streaming_accuracy(
+      accuracy, update_op = metrics.streaming_accuracy(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
@@ -332,12 +461,13 @@ class StreamingAccuracyTest(tf.test.TestCase):
       _enqueue_vector(sess, weights_queue, [0])
       weights = weights_queue.dequeue()
 
-      accuracy, update_op = tf.contrib.metrics.streaming_accuracy(
+      accuracy, update_op = metrics.streaming_accuracy(
           predictions, labels, weights)
 
       sess.run(tf.initialize_local_variables())
-      for _ in range(4):
+      for _ in xrange(3):
         sess.run(update_op)
+      self.assertEqual(1.0, sess.run(update_op))
       self.assertEqual(1.0, accuracy.eval())
 
 
@@ -349,7 +479,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_precision(
+    mean, _ = metrics.streaming_precision(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -357,7 +487,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_precision(
+    _, update_op = metrics.streaming_precision(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
@@ -366,7 +496,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
     labels = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
-    precision, update_op = tf.contrib.metrics.streaming_precision(
+    precision, update_op = metrics.streaming_precision(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -381,25 +511,12 @@ class StreamingPrecisionTest(tf.test.TestCase):
       for _ in range(10):
         self.assertEqual(initial_precision, precision.eval())
 
-  def testEffectivelyEquivalentShapes(self):
-    inputs = np.random.randint(0, 2, size=(100, 1))
-
-    predictions = tf.constant(inputs, shape=(100, 1))
-    labels = tf.constant(inputs, shape=(100,))
-    precision, update_op = tf.contrib.metrics.streaming_precision(
-        predictions, labels)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertAlmostEqual(1, sess.run(update_op))
-      self.assertAlmostEqual(1, precision.eval())
-
   def testAllCorrect(self):
     inputs = np.random.randint(0, 2, size=(100, 1))
 
     predictions = tf.constant(inputs)
     labels = tf.constant(inputs)
-    precision, update_op = tf.contrib.metrics.streaming_precision(
+    precision, update_op = metrics.streaming_precision(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -410,7 +527,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
   def testSomeCorrect(self):
     predictions = tf.constant([1, 0, 1, 0], shape=(1, 4))
     labels = tf.constant([0, 1, 1, 0], shape=(1, 4))
-    precision, update_op = tf.contrib.metrics.streaming_precision(
+    precision, update_op = metrics.streaming_precision(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -423,7 +540,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
 
     predictions = tf.constant(inputs)
     labels = tf.constant(1 - inputs)
-    precision, update_op = tf.contrib.metrics.streaming_precision(
+    precision, update_op = metrics.streaming_precision(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -434,7 +551,7 @@ class StreamingPrecisionTest(tf.test.TestCase):
   def testZeroTrueAndFalsePositivesGivesZeroPrecision(self):
     predictions = tf.constant([0, 0, 0, 0])
     labels = tf.constant([0, 0, 0, 0])
-    precision, update_op = tf.contrib.metrics.streaming_precision(
+    precision, update_op = metrics.streaming_precision(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -451,7 +568,7 @@ class StreamingRecallTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_recall(
+    mean, _ = metrics.streaming_recall(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -459,7 +576,7 @@ class StreamingRecallTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_recall(
+    _, update_op = metrics.streaming_recall(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
@@ -468,7 +585,7 @@ class StreamingRecallTest(tf.test.TestCase):
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
     labels = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
-    recall, update_op = tf.contrib.metrics.streaming_recall(
+    recall, update_op = metrics.streaming_recall(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -483,24 +600,12 @@ class StreamingRecallTest(tf.test.TestCase):
       for _ in range(10):
         self.assertEqual(initial_recall, recall.eval())
 
-  def testEffectivelyEquivalentShapes(self):
-    np_inputs = np.random.randint(0, 2, size=(100, 1))
-
-    predictions = tf.constant(np_inputs, shape=(100,))
-    labels = tf.constant(np_inputs, shape=(100, 1))
-    recall, update_op = tf.contrib.metrics.streaming_recall(predictions, labels)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
-      self.assertEqual(1, recall.eval())
-
   def testAllCorrect(self):
     np_inputs = np.random.randint(0, 2, size=(100, 1))
 
     predictions = tf.constant(np_inputs)
     labels = tf.constant(np_inputs)
-    recall, update_op = tf.contrib.metrics.streaming_recall(predictions, labels)
+    recall, update_op = metrics.streaming_recall(predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
@@ -510,7 +615,7 @@ class StreamingRecallTest(tf.test.TestCase):
   def testSomeCorrect(self):
     predictions = tf.constant([1, 0, 1, 0], shape=(1, 4))
     labels = tf.constant([0, 1, 1, 0], shape=(1, 4))
-    recall, update_op = tf.contrib.metrics.streaming_recall(predictions, labels)
+    recall, update_op = metrics.streaming_recall(predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
@@ -522,7 +627,7 @@ class StreamingRecallTest(tf.test.TestCase):
 
     predictions = tf.constant(np_inputs)
     labels = tf.constant(1 - np_inputs)
-    recall, update_op = tf.contrib.metrics.streaming_recall(predictions, labels)
+    recall, update_op = metrics.streaming_recall(predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
@@ -532,7 +637,7 @@ class StreamingRecallTest(tf.test.TestCase):
   def testZeroTruePositivesAndFalseNegativesGivesZeroRecall(self):
     predictions = tf.zeros((1, 4))
     labels = tf.zeros((1, 4))
-    recall, update_op = tf.contrib.metrics.streaming_recall(predictions, labels)
+    recall, update_op = metrics.streaming_recall(predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
@@ -548,7 +653,7 @@ class StreamingAUCTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_auc(
+    mean, _ = metrics.streaming_auc(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -556,7 +661,7 @@ class StreamingAUCTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_auc(
+    _, update_op = metrics.streaming_auc(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
@@ -565,7 +670,7 @@ class StreamingAUCTest(tf.test.TestCase):
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.float32, seed=1)
     labels = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
-    auc, update_op = tf.contrib.metrics.streaming_auc(
+    auc, update_op = metrics.streaming_auc(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -580,29 +685,19 @@ class StreamingAUCTest(tf.test.TestCase):
       for _ in range(10):
         self.assertAlmostEqual(initial_auc, auc.eval(), 5)
 
-  def testEffectivelyEquivalentShapes(self):
-    inputs = np.random.randint(0, 2, size=(100, 1))
-
-    with self.test_session() as sess:
-      predictions = tf.constant(inputs, dtype=tf.float32, shape=(100,))
-      labels = tf.constant(inputs, shape=(100, 1))
-      auc, update_op = tf.contrib.metrics.streaming_auc(predictions, labels)
-
-      sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
-
-      self.assertEqual(1, auc.eval())
-
   def testAllCorrect(self):
+    self.allCorrectAsExpected('ROC')
+
+  def allCorrectAsExpected(self, curve):
     inputs = np.random.randint(0, 2, size=(100, 1))
 
     with self.test_session() as sess:
       predictions = tf.constant(inputs, dtype=tf.float32)
       labels = tf.constant(inputs)
-      auc, update_op = tf.contrib.metrics.streaming_auc(predictions, labels)
+      auc, update_op = metrics.streaming_auc(predictions, labels, curve=curve)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(1, sess.run(update_op))
 
       self.assertEqual(1, auc.eval())
 
@@ -610,12 +705,48 @@ class StreamingAUCTest(tf.test.TestCase):
     with self.test_session() as sess:
       predictions = tf.constant([1, 0, 1, 0], shape=(1, 4), dtype=tf.float32)
       labels = tf.constant([0, 1, 1, 0], shape=(1, 4))
-      auc, update_op = tf.contrib.metrics.streaming_auc(predictions, labels)
+      auc, update_op = metrics.streaming_auc(predictions, labels)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(0.5, sess.run(update_op))
 
       self.assertAlmostEqual(0.5, auc.eval())
+
+  def testAUCPRSpecialCase(self):
+    with self.test_session() as sess:
+      predictions = tf.constant([0.1, 0.4, 0.35, 0.8],
+                                shape=(1, 4), dtype=tf.float32)
+      labels = tf.constant([0, 0, 1, 1], shape=(1, 4))
+      auc, update_op = metrics.streaming_auc(predictions, labels, curve='PR')
+
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(0.79166, sess.run(update_op), delta=1e-3)
+
+      self.assertAlmostEqual(0.79166, auc.eval(), delta=1e-3)
+
+  def testAnotherAUCPRSpecialCase(self):
+    with self.test_session() as sess:
+      predictions = tf.constant([0.1, 0.4, 0.35, 0.8, 0.1, 0.135, 0.81],
+                                shape=(1, 7), dtype=tf.float32)
+      labels = tf.constant([0, 0, 1, 0, 1, 0, 1], shape=(1, 7))
+      auc, update_op = metrics.streaming_auc(predictions, labels, curve='PR')
+
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(0.610317, sess.run(update_op), delta=1e-3)
+
+      self.assertAlmostEqual(0.610317, auc.eval(), delta=1e-3)
+
+  def testThirdAUCPRSpecialCase(self):
+    with self.test_session() as sess:
+      predictions = tf.constant([0.0, 0.1, 0.2, 0.33, 0.3, 0.4, 0.5],
+                                shape=(1, 7), dtype=tf.float32)
+      labels = tf.constant([0, 0, 0, 0, 1, 1, 1], shape=(1, 7))
+      auc, update_op = metrics.streaming_auc(predictions, labels, curve='PR')
+
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(0.90277, sess.run(update_op), delta=1e-3)
+
+      self.assertAlmostEqual(0.90277, auc.eval(), delta=1e-3)
 
   def testAllIncorrect(self):
     inputs = np.random.randint(0, 2, size=(100, 1))
@@ -623,10 +754,10 @@ class StreamingAUCTest(tf.test.TestCase):
     with self.test_session() as sess:
       predictions = tf.constant(inputs, dtype=tf.float32)
       labels = tf.constant(1 - inputs, dtype=tf.float32)
-      auc, update_op = tf.contrib.metrics.streaming_auc(predictions, labels)
+      auc, update_op = metrics.streaming_auc(predictions, labels)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(0, sess.run(update_op))
 
       self.assertAlmostEqual(0, auc.eval())
 
@@ -634,35 +765,52 @@ class StreamingAUCTest(tf.test.TestCase):
     with self.test_session() as sess:
       predictions = tf.zeros([4], dtype=tf.float32)
       labels = tf.zeros([4])
-      auc, update_op = tf.contrib.metrics.streaming_auc(predictions, labels)
+      auc, update_op = metrics.streaming_auc(predictions, labels)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(1, sess.run(update_op), 6)
 
       self.assertAlmostEqual(1, auc.eval(), 6)
 
-  def np_auc(self, predictions, labels):
+  def testRecallOneAndPrecisionOneGivesOnePRAUC(self):
+    with self.test_session() as sess:
+      predictions = tf.ones([4], dtype=tf.float32)
+      labels = tf.ones([4])
+      auc, update_op = metrics.streaming_auc(predictions,
+                                             labels,
+                                             curve='PR')
+
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(1, sess.run(update_op), 6)
+
+      self.assertAlmostEqual(1, auc.eval(), 6)
+
+  def np_auc(self, predictions, labels, weights):
     """Computes the AUC explicitely using Numpy.
 
     Args:
-      predictions: an ndarray with shape [N, 1].
-      labels: an ndarray with shape [N, 1].
+      predictions: an ndarray with shape [N].
+      labels: an ndarray with shape [N].
+      weights: an ndarray with shape [N].
 
     Returns:
       the area under the ROC curve.
     """
-    num_positives = np.count_nonzero(labels)
-    num_negatives = labels.size - num_positives
+    if weights is None:
+      weights = np.ones(np.size(predictions))
+    is_positive = labels > 0
+    num_positives = np.sum(weights[is_positive])
+    num_negatives = np.sum(weights[~is_positive])
 
     # Sort descending:
-    inds = np.argsort(-predictions.transpose())
+    inds = np.argsort(-predictions)
 
-    predictions = predictions[inds].squeeze()
-    labels = labels[inds].squeeze()
+    sorted_labels = labels[inds]
+    sorted_weights = weights[inds]
+    is_positive = sorted_labels > 0
 
-    tp = np.cumsum(labels > 0) / float(num_positives)
-
-    return np.sum(tp[labels == 0] / num_negatives)
+    tp = np.cumsum(sorted_weights * is_positive) / num_positives
+    return np.sum((sorted_weights * tp)[~is_positive]) / num_negatives
 
   def testWithMultipleUpdates(self):
     num_samples = 1000
@@ -670,49 +818,223 @@ class StreamingAUCTest(tf.test.TestCase):
     num_batches = int(num_samples / batch_size)
 
     # Create the labels and data.
-    labels = np.random.randint(0, 2, size=(num_samples, 1))
-    noise = np.random.normal(0.0, scale=0.2, size=(num_samples, 1))
+    labels = np.random.randint(0, 2, size=num_samples)
+    noise = np.random.normal(0.0, scale=0.2, size=num_samples)
     predictions = 0.4 + 0.2 * labels + noise
     predictions[predictions > 1] = 1
     predictions[predictions < 0] = 0
-    expected_auc = self.np_auc(predictions, labels)
 
-    labels = labels.astype(np.float32)
-    predictions = predictions.astype(np.float32)
+    def _enqueue_as_batches(x, enqueue_ops):
+      x_batches = x.astype(np.float32).reshape((num_batches, batch_size))
+      x_queue = tf.FIFOQueue(num_batches, dtypes=tf.float32,
+                             shapes=(batch_size,))
+      for i in range(num_batches):
+        enqueue_ops[i].append(x_queue.enqueue(x_batches[i, :]))
+      return x_queue.dequeue()
+
+    for weights in (None,
+                    np.ones(num_samples),
+                    np.random.exponential(scale=1.0, size=num_samples)):
+      expected_auc = self.np_auc(predictions, labels, weights)
+
+      with self.test_session() as sess:
+        enqueue_ops = [[] for i in range(num_batches)]
+        tf_predictions = _enqueue_as_batches(predictions, enqueue_ops)
+        tf_labels = _enqueue_as_batches(labels, enqueue_ops)
+        tf_weights = (_enqueue_as_batches(weights, enqueue_ops)
+                      if weights is not None else None)
+
+        for i in range(num_batches):
+          sess.run(enqueue_ops[i])
+
+        auc, update_op = metrics.streaming_auc(
+            tf_predictions, tf_labels, curve='ROC', num_thresholds=500,
+            weights=tf_weights)
+
+        sess.run(tf.initialize_local_variables())
+        for i in range(num_batches):
+          sess.run(update_op)
+
+        # Since this is only approximate, we can't expect a 6 digits match.
+        # Although with higher number of samples/thresholds we should see the
+        # accuracy improving
+        self.assertAlmostEqual(expected_auc, auc.eval(), 2)
+
+
+class StreamingSpecificityAtSensitivityTest(tf.test.TestCase):
+
+  def setUp(self):
+    np.random.seed(1)
+    tf.reset_default_graph()
+
+  def testMetricsCollection(self):
+    my_collection_name = '__metrics__'
+    mean, _ = metrics.streaming_specificity_at_sensitivity(
+        predictions=tf.ones((10, 1)),
+        labels=tf.ones((10, 1)),
+        sensitivity=0.7,
+        metrics_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [mean])
+
+  def testUpdatesCollection(self):
+    my_collection_name = '__updates__'
+    _, update_op = metrics.streaming_specificity_at_sensitivity(
+        predictions=tf.ones((10, 1)),
+        labels=tf.ones((10, 1)),
+        sensitivity=0.7,
+        updates_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
+
+  def testValueTensorIsIdempotent(self):
+    predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.float32, seed=1)
+    labels = tf.random_uniform((10, 3), maxval=2, dtype=tf.int64, seed=1)
+    specificity, update_op = metrics.streaming_specificity_at_sensitivity(
+        predictions, labels, sensitivity=0.7)
 
     with self.test_session() as sess:
-      # Reshape the data so its easy to queue up:
-      predictions_batches = predictions.reshape((batch_size, num_batches))
-      labels_batches = labels.reshape((batch_size, num_batches))
-
-      # Enqueue the data:
-      predictions_queue = tf.FIFOQueue(num_batches, dtypes=tf.float32,
-                                       shapes=(batch_size,))
-      labels_queue = tf.FIFOQueue(num_batches, dtypes=tf.float32,
-                                  shapes=(batch_size,))
-
-      for i in range(int(num_batches)):
-        tf_prediction = tf.constant(predictions_batches[:, i])
-        tf_label = tf.constant(labels_batches[:, i])
-        sess.run([predictions_queue.enqueue(tf_prediction),
-                  labels_queue.enqueue(tf_label)])
-
-      tf_predictions = predictions_queue.dequeue()
-      tf_labels = labels_queue.dequeue()
-
-      auc, update_op = tf.contrib.metrics.streaming_auc(
-          tf_predictions, tf_labels, num_thresholds=500)
-
       sess.run(tf.initialize_local_variables())
-      for _ in range(int(num_samples / batch_size)):
+
+      # Run several updates.
+      for _ in range(10):
         sess.run(update_op)
 
-      # Since this is only approximate, we can't expect a 6 digits match.
-      # Although with higher number of samples/thresholds we should see the
-      # accuracy improving
-      self.assertAlmostEqual(expected_auc, auc.eval(), 2)
+      # Then verify idempotency.
+      initial_specificity = specificity.eval()
+      for _ in range(10):
+        self.assertAlmostEqual(initial_specificity, specificity.eval(), 5)
+
+  def testAllCorrect(self):
+    inputs = np.random.randint(0, 2, size=(100, 1))
+
+    predictions = tf.constant(inputs, dtype=tf.float32)
+    labels = tf.constant(inputs)
+    specificity, update_op = metrics.streaming_specificity_at_sensitivity(
+        predictions, labels, sensitivity=0.7)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(1, sess.run(update_op))
+      self.assertEqual(1, specificity.eval())
+
+  def testSomeCorrectHighSensitivity(self):
+    predictions_values = [0.1, 0.2, 0.4, 0.3, 0.0,
+                          0.1, 0.45, 0.5, 0.8, 0.9]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = tf.constant(predictions_values, dtype=tf.float32)
+    labels = tf.constant(labels_values)
+    specificity, update_op = metrics.streaming_specificity_at_sensitivity(
+        predictions, labels, sensitivity=0.8)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(1.0, sess.run(update_op))
+      self.assertAlmostEqual(1.0, specificity.eval())
+
+  def testSomeCorrectLowSensitivity(self):
+    predictions_values = [0.1, 0.2, 0.4, 0.3, 0.0,
+                          0.1, 0.2, 0.2, 0.26, 0.26]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = tf.constant(predictions_values, dtype=tf.float32)
+    labels = tf.constant(labels_values)
+    specificity, update_op = metrics.streaming_specificity_at_sensitivity(
+        predictions, labels, sensitivity=0.4)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+
+      self.assertAlmostEqual(0.6, sess.run(update_op))
+      self.assertAlmostEqual(0.6, specificity.eval())
 
 
+class StreamingSensitivityAtSpecificityTest(tf.test.TestCase):
+
+  def setUp(self):
+    np.random.seed(1)
+    tf.reset_default_graph()
+
+  def testMetricsCollection(self):
+    my_collection_name = '__metrics__'
+    mean, _ = metrics.streaming_sensitivity_at_specificity(
+        predictions=tf.ones((10, 1)),
+        labels=tf.ones((10, 1)),
+        specificity=0.7,
+        metrics_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [mean])
+
+  def testUpdatesCollection(self):
+    my_collection_name = '__updates__'
+    _, update_op = metrics.streaming_sensitivity_at_specificity(
+        predictions=tf.ones((10, 1)),
+        labels=tf.ones((10, 1)),
+        specificity=0.7,
+        updates_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
+
+  def testValueTensorIsIdempotent(self):
+    predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.float32, seed=1)
+    labels = tf.random_uniform((10, 3), maxval=2, dtype=tf.int64, seed=1)
+    sensitivity, update_op = metrics.streaming_sensitivity_at_specificity(
+        predictions, labels, specificity=0.7)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+
+      # Run several updates.
+      for _ in range(10):
+        sess.run(update_op)
+
+      # Then verify idempotency.
+      initial_sensitivity = sensitivity.eval()
+      for _ in range(10):
+        self.assertAlmostEqual(initial_sensitivity, sensitivity.eval(), 5)
+
+  def testAllCorrect(self):
+    inputs = np.random.randint(0, 2, size=(100, 1))
+
+    predictions = tf.constant(inputs, dtype=tf.float32)
+    labels = tf.constant(inputs)
+    specificity, update_op = metrics.streaming_sensitivity_at_specificity(
+        predictions, labels, specificity=0.7)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(1, sess.run(update_op))
+      self.assertEqual(1, specificity.eval())
+
+  def testSomeCorrectHighSpecificity(self):
+    predictions_values = [0.0, 0.1, 0.2, 0.3, 0.4,
+                          0.1, 0.45, 0.5, 0.8, 0.9]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = tf.constant(predictions_values, dtype=tf.float32)
+    labels = tf.constant(labels_values)
+    specificity, update_op = metrics.streaming_sensitivity_at_specificity(
+        predictions, labels, specificity=0.8)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(0.8, sess.run(update_op))
+      self.assertAlmostEqual(0.8, specificity.eval())
+
+  def testSomeCorrectLowSpecificity(self):
+    predictions_values = [0.0, 0.1, 0.2, 0.3, 0.4,
+                          0.01, 0.02, 0.25, 0.26, 0.26]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = tf.constant(predictions_values, dtype=tf.float32)
+    labels = tf.constant(labels_values)
+    specificity, update_op = metrics.streaming_sensitivity_at_specificity(
+        predictions, labels, specificity=0.4)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertAlmostEqual(0.6, sess.run(update_op))
+      self.assertAlmostEqual(0.6, specificity.eval())
+
+
+# TODO(nsilberman): Break this up into two sets of tests.
 class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
 
   def setUp(self):
@@ -721,12 +1043,12 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    prec, _ = tf.contrib.metrics.streaming_precision_at_thresholds(
+    prec, _ = metrics.streaming_precision_at_thresholds(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         thresholds=[0, 0.5, 1.0],
         metrics_collections=[my_collection_name])
-    rec, _ = tf.contrib.metrics.streaming_recall_at_thresholds(
+    rec, _ = metrics.streaming_recall_at_thresholds(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         thresholds=[0, 0.5, 1.0],
@@ -735,12 +1057,12 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, precision_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+    _, precision_op = metrics.streaming_precision_at_thresholds(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         thresholds=[0, 0.5, 1.0],
         updates_collections=[my_collection_name])
-    _, recall_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+    _, recall_op = metrics.streaming_recall_at_thresholds(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         thresholds=[0, 0.5, 1.0],
@@ -752,9 +1074,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
     predictions = tf.random_uniform((10, 3), maxval=1, dtype=tf.float32, seed=1)
     labels = tf.random_uniform((10, 3), maxval=1, dtype=tf.int64, seed=1)
     thresholds = [0, 0.5, 1.0]
-    prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+    prec, prec_op = metrics.streaming_precision_at_thresholds(
         predictions, labels, thresholds)
-    rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+    rec, rec_op = metrics.streaming_recall_at_thresholds(
         predictions, labels, thresholds)
 
     with self.test_session() as sess:
@@ -769,24 +1091,7 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
         self.assertAllClose(initial_prec, prec.eval())
         self.assertAllClose(initial_rec, rec.eval())
 
-  def testEffectivelyEquivalentShapes(self):
-    inputs = np.random.randint(0, 2, size=(100, 1))
-
-    with self.test_session() as sess:
-      predictions = tf.constant(inputs, dtype=tf.float32, shape=(100,))
-      labels = tf.constant(inputs, shape=(100, 1))
-      thresholds = [0.5]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
-          predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
-          predictions, labels, thresholds)
-
-      sess.run(tf.initialize_local_variables())
-      sess.run([prec_op, rec_op])
-
-      self.assertEqual(1, prec.eval())
-      self.assertEqual(1, rec.eval())
-
+  # TODO(nsilberman): fix tests (passing but incorrect).
   def testAllCorrect(self):
     inputs = np.random.randint(0, 2, size=(100, 1))
 
@@ -794,9 +1099,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       predictions = tf.constant(inputs, dtype=tf.float32)
       labels = tf.constant(inputs)
       thresholds = [0.5]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           predictions, labels, thresholds)
 
       sess.run(tf.initialize_local_variables())
@@ -810,9 +1115,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       predictions = tf.constant([1, 0, 1, 0], shape=(1, 4), dtype=tf.float32)
       labels = tf.constant([0, 1, 1, 0], shape=(1, 4))
       thresholds = [0.5]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           predictions, labels, thresholds)
 
       sess.run(tf.initialize_local_variables())
@@ -828,9 +1133,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       predictions = tf.constant(inputs, dtype=tf.float32)
       labels = tf.constant(1 - inputs, dtype=tf.float32)
       thresholds = [0.5]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           predictions, labels, thresholds)
 
       sess.run(tf.initialize_local_variables())
@@ -839,17 +1144,17 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       self.assertAlmostEqual(0, prec.eval())
       self.assertAlmostEqual(0, rec.eval())
 
-  def testIgnoreMask(self):
+  def testWeights(self):
     with self.test_session() as sess:
       predictions = tf.constant([[1, 0], [1, 0]], shape=(2, 2),
                                 dtype=tf.float32)
       labels = tf.constant([[0, 1], [1, 0]], shape=(2, 2))
-      ignore_mask = tf.constant([[True, True], [False, False]], shape=(2, 2))
+      weights = tf.constant([[0.0, 0.0], [1.0, 1.0]], shape=(2, 2))
       thresholds = [0.5, 1.1]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
-          predictions, labels, thresholds, ignore_mask=ignore_mask)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
-          predictions, labels, thresholds, ignore_mask=ignore_mask)
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
+          predictions, labels, thresholds, weights=weights)
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
+          predictions, labels, thresholds, weights=weights)
 
       [prec_low, prec_high] = tf.split(0, 2, prec)
       prec_low = tf.reshape(prec_low, shape=())
@@ -871,9 +1176,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       predictions = tf.constant([1, 0, 1, 0], shape=(1, 4), dtype=tf.float32)
       labels = tf.constant([0, 1, 1, 1], shape=(1, 4))
       thresholds = [-1.0, 2.0]  # lower/higher than any values
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           predictions, labels, thresholds)
 
       [prec_low, prec_high] = tf.split(0, 2, prec)
@@ -892,9 +1197,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       predictions = tf.zeros([4], dtype=tf.float32)
       labels = tf.zeros([4])
       thresholds = [0.5]
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           predictions, labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           predictions, labels, thresholds)
 
       sess.run(tf.initialize_local_variables())
@@ -906,7 +1211,7 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
   def testWithMultipleUpdates(self):
     num_samples = 1000
     batch_size = 10
-    num_batches = num_samples / batch_size
+    num_batches = int(num_samples / batch_size)
 
     # Create the labels and data.
     labels = np.random.randint(0, 2, size=(num_samples, 1))
@@ -958,9 +1263,9 @@ class StreamingPrecisionRecallThresholdsTest(tf.test.TestCase):
       tf_predictions = predictions_queue.dequeue()
       tf_labels = labels_queue.dequeue()
 
-      prec, prec_op = tf.contrib.metrics.streaming_precision_at_thresholds(
+      prec, prec_op = metrics.streaming_precision_at_thresholds(
           tf_predictions, tf_labels, thresholds)
-      rec, rec_op = tf.contrib.metrics.streaming_recall_at_thresholds(
+      rec, rec_op = metrics.streaming_recall_at_thresholds(
           tf_predictions, tf_labels, thresholds)
 
       sess.run(tf.initialize_local_variables())
@@ -989,7 +1294,7 @@ class StreamingRecallAtKTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_recall_at_k(
+    mean, _ = metrics.streaming_recall_at_k(
         predictions=tf.ones((self._batch_size, self._num_classes)),
         labels=tf.ones((self._batch_size,), dtype=tf.int32),
         k=1,
@@ -998,7 +1303,7 @@ class StreamingRecallAtKTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_recall_at_k(
+    _, update_op = metrics.streaming_recall_at_k(
         predictions=tf.ones((self._batch_size, self._num_classes)),
         labels=tf.ones((self._batch_size,), dtype=tf.int32),
         k=1,
@@ -1010,12 +1315,12 @@ class StreamingRecallAtKTest(tf.test.TestCase):
                               shape=(self._batch_size, self._num_classes),
                               dtype=tf.float32)
     labels = tf.constant(self._np_labels, shape=(self._batch_size,))
-    recall, update_op = tf.contrib.metrics.streaming_recall_at_k(
+    recall, update_op = metrics.streaming_recall_at_k(
         predictions, labels, k=1)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0.25, sess.run(update_op))
       self.assertEqual(0.25, recall.eval())
 
   def testSingleUpdateAllPresentKIs2(self):
@@ -1023,12 +1328,12 @@ class StreamingRecallAtKTest(tf.test.TestCase):
                               shape=(self._batch_size, self._num_classes),
                               dtype=tf.float32)
     labels = tf.constant(self._np_labels, shape=(self._batch_size,))
-    recall, update_op = tf.contrib.metrics.streaming_recall_at_k(
+    recall, update_op = metrics.streaming_recall_at_k(
         predictions, labels, k=2)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0.5, sess.run(update_op))
       self.assertEqual(0.5, recall.eval())
 
   def testSingleUpdateAllPresentKIs3(self):
@@ -1036,12 +1341,12 @@ class StreamingRecallAtKTest(tf.test.TestCase):
                               shape=(self._batch_size, self._num_classes),
                               dtype=tf.float32)
     labels = tf.constant(self._np_labels, shape=(self._batch_size,))
-    recall, update_op = tf.contrib.metrics.streaming_recall_at_k(
+    recall, update_op = metrics.streaming_recall_at_k(
         predictions, labels, k=3)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(1.0, sess.run(update_op))
       self.assertEqual(1.0, recall.eval())
 
   def testSingleUpdateSomeMissingKIs2(self):
@@ -1051,12 +1356,12 @@ class StreamingRecallAtKTest(tf.test.TestCase):
     labels = tf.constant(self._np_labels, shape=(self._batch_size,))
     ignore_mask = tf.constant([True, False, True, False],
                               shape=(self._batch_size,), dtype=tf.bool)
-    recall, update_op = tf.contrib.metrics.streaming_recall_at_k(
+    recall, update_op = metrics.streaming_recall_at_k(
         predictions, labels, k=2, ignore_mask=ignore_mask)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(1.0, sess.run(update_op))
       self.assertEqual(1.0, recall.eval())
 
 
@@ -1069,7 +1374,7 @@ class StreamingSparsePrecisionTest(tf.test.TestCase):
                              expected,
                              class_id=None,
                              ignore_mask=None):
-    loss, loss_update = tf.contrib.metrics.streaming_sparse_precision_at_k(
+    loss, loss_update = metrics.streaming_sparse_precision_at_k(
         predictions=tf.constant(predictions, tf.float32), labels=labels,
         k=k, class_id=class_id, ignore_mask=ignore_mask)
 
@@ -1359,7 +1664,7 @@ class StreamingSparsePrecisionTest(tf.test.TestCase):
     labels = [[0, 0, 0, 1], [0, 0, 1, 0]]
     expected_precision = 0.5
     with self.test_session():
-      _, precision = tf.contrib.metrics.streaming_sparse_precision_at_k(
+      _, precision = metrics.streaming_sparse_precision_at_k(
           predictions=tf.constant(predictions, tf.float32),
           labels=_binary_2d_label_to_sparse_value(labels), k=1)
 
@@ -1377,7 +1682,7 @@ class StreamingSparseRecallTest(tf.test.TestCase):
                           expected,
                           class_id=None,
                           ignore_mask=None):
-    loss, loss_update = tf.contrib.metrics.streaming_sparse_recall_at_k(
+    loss, loss_update = metrics.streaming_sparse_recall_at_k(
         predictions=tf.constant(predictions, tf.float32),
         labels=labels, k=k, class_id=class_id, ignore_mask=ignore_mask)
 
@@ -1671,7 +1976,7 @@ class StreamingSparseRecallTest(tf.test.TestCase):
     labels = [[0, 0, 1, 0], [0, 0, 0, 1]]
     expected_recall = 0.5
     with self.test_session():
-      _, recall = tf.contrib.metrics.streaming_sparse_recall_at_k(
+      _, recall = metrics.streaming_sparse_recall_at_k(
           predictions=tf.constant(predictions, tf.float32),
           labels=_binary_2d_label_to_sparse_value(labels), k=1)
 
@@ -1687,7 +1992,7 @@ class StreamingMeanAbsoluteErrorTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_mean_absolute_error(
+    mean, _ = metrics.streaming_mean_absolute_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -1695,27 +2000,16 @@ class StreamingMeanAbsoluteErrorTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_mean_absolute_error(
+    _, update_op = metrics.streaming_mean_absolute_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
 
-  def testEffectivelyEquivalentShapes(self):
-    predictions = tf.ones((10, 3, 1))
-    labels = tf.ones((10, 3,))
-    error, update_op = tf.contrib.metrics.streaming_mean_absolute_error(
-        predictions, labels)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertEqual(0.0, update_op.eval())
-      self.assertEqual(0.0, error.eval())
-
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_normal((10, 3), seed=1)
     labels = tf.random_normal((10, 3), seed=2)
-    error, update_op = tf.contrib.metrics.streaming_mean_absolute_error(
+    error, update_op = metrics.streaming_mean_absolute_error(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -1735,12 +2029,12 @@ class StreamingMeanAbsoluteErrorTest(tf.test.TestCase):
     labels = tf.constant([1, 3, 2, 3], shape=(1, 4), dtype=tf.float32)
     weights = tf.constant([0, 1, 0, 1], shape=(1, 4))
 
-    error, update_op = tf.contrib.metrics.streaming_mean_absolute_error(
+    error, update_op = metrics.streaming_mean_absolute_error(
         predictions, labels, weights)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(3, sess.run(update_op))
       self.assertEqual(3, error.eval())
 
 
@@ -1751,16 +2045,17 @@ class StreamingMeanRelativeErrorTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_mean_relative_error(
+    mean, _ = metrics.streaming_mean_relative_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         normalizer=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
-    self.assertListEqual(tf.get_collection(my_collection_name), [mean])
+    self.assertListEqual(
+        tf.get_collection(my_collection_name), [mean])
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_mean_relative_error(
+    _, update_op = metrics.streaming_mean_relative_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         normalizer=tf.ones((10, 1)),
@@ -1771,7 +2066,7 @@ class StreamingMeanRelativeErrorTest(tf.test.TestCase):
     predictions = tf.random_normal((10, 3), seed=1)
     labels = tf.random_normal((10, 3), seed=2)
     normalizer = tf.random_normal((10, 3), seed=3)
-    error, update_op = tf.contrib.metrics.streaming_mean_relative_error(
+    error, update_op = metrics.streaming_mean_relative_error(
         predictions, labels, normalizer)
 
     with self.test_session() as sess:
@@ -1786,18 +2081,6 @@ class StreamingMeanRelativeErrorTest(tf.test.TestCase):
       for _ in range(10):
         self.assertEqual(initial_error, error.eval())
 
-  def testEffectivelyEquivalentShapes(self):
-    predictions = tf.ones((10, 3, 1))
-    labels = tf.ones((10, 3,))
-    normalizer = tf.ones((10, 3, 1))
-    error, update_op = tf.contrib.metrics.streaming_mean_relative_error(
-        predictions, labels, normalizer)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertEqual(0.0, update_op.eval())
-      self.assertEqual(0.0, error.eval())
-
   def testSingleUpdateNormalizedByLabels(self):
     np_predictions = np.asarray([2, 4, 6, 8], dtype=np.float32)
     np_labels = np.asarray([1, 3, 2, 3], dtype=np.float32)
@@ -1808,12 +2091,12 @@ class StreamingMeanRelativeErrorTest(tf.test.TestCase):
     predictions = tf.constant(np_predictions, shape=(1, 4), dtype=tf.float32)
     labels = tf.constant(np_labels, shape=(1, 4))
 
-    error, update_op = tf.contrib.metrics.streaming_mean_relative_error(
+    error, update_op = metrics.streaming_mean_relative_error(
         predictions, labels, normalizer=labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(expected_error, sess.run(update_op))
       self.assertEqual(expected_error, error.eval())
 
   def testSingleUpdateNormalizedByZeros(self):
@@ -1822,12 +2105,12 @@ class StreamingMeanRelativeErrorTest(tf.test.TestCase):
     predictions = tf.constant(np_predictions, shape=(1, 4), dtype=tf.float32)
     labels = tf.constant([1, 3, 2, 3], shape=(1, 4), dtype=tf.float32)
 
-    error, update_op = tf.contrib.metrics.streaming_mean_relative_error(
+    error, update_op = metrics.streaming_mean_relative_error(
         predictions, labels, normalizer=tf.zeros_like(labels))
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0.0, sess.run(update_op))
       self.assertEqual(0.0, error.eval())
 
 
@@ -1838,7 +2121,7 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_mean_squared_error(
+    mean, _ = metrics.streaming_mean_squared_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -1846,27 +2129,16 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+    _, update_op = metrics.streaming_mean_squared_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
 
-  def testEffectivelyEquivalentShapes(self):
-    predictions = tf.ones((10, 3, 1))
-    labels = tf.ones((10, 3,))
-    error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
-        predictions, labels)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertEqual(0.0, update_op.eval())
-      self.assertEqual(0.0, error.eval())
-
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_normal((10, 3), seed=1)
     labels = tf.random_normal((10, 3), seed=2)
-    error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+    error, update_op = metrics.streaming_mean_squared_error(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -1885,24 +2157,24 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
     predictions = tf.zeros((1, 3), dtype=tf.float32)
     labels = tf.zeros((1, 3), dtype=tf.float32)
 
-    error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+    error, update_op = metrics.streaming_mean_squared_error(
         predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0, sess.run(update_op))
       self.assertEqual(0, error.eval())
 
   def testSingleUpdateWithError(self):
     predictions = tf.constant([2, 4, 6], shape=(1, 3), dtype=tf.float32)
     labels = tf.constant([1, 3, 2], shape=(1, 3), dtype=tf.float32)
 
-    error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+    error, update_op = metrics.streaming_mean_squared_error(
         predictions, labels)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(6, sess.run(update_op))
       self.assertEqual(6, error.eval())
 
   def testSingleUpdateWithErrorAndWeights(self):
@@ -1910,12 +2182,12 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
     labels = tf.constant([1, 3, 2, 3], shape=(1, 4), dtype=tf.float32)
     weights = tf.constant([0, 1, 0, 1], shape=(1, 4))
 
-    error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+    error, update_op = metrics.streaming_mean_squared_error(
         predictions, labels, weights)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(13, sess.run(update_op))
       self.assertEqual(13, error.eval())
 
   def testMultipleBatchesOfSizeOne(self):
@@ -1932,12 +2204,12 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
       _enqueue_vector(sess, labels_queue, [2, 4, 6])
       labels = labels_queue.dequeue()
 
-      error, update_op = tf.contrib.metrics.streaming_mean_squared_error(
+      error, update_op = metrics.streaming_mean_squared_error(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
       sess.run(update_op)
-      sess.run(update_op)
+      self.assertAlmostEqual(208 / 6.0, sess.run(update_op), 5)
 
       self.assertAlmostEqual(208 / 6.0, error.eval(), 5)
 
@@ -1967,9 +2239,9 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
       _enqueue_vector(sess, labels_queue1, [5, 4, 3])
       labels1 = labels_queue1.dequeue()
 
-      mse0, update_op0 = tf.contrib.metrics.streaming_mean_squared_error(
+      mse0, update_op0 = metrics.streaming_mean_squared_error(
           predictions0, labels0, name='msd0')
-      mse1, update_op1 = tf.contrib.metrics.streaming_mean_squared_error(
+      mse1, update_op1 = metrics.streaming_mean_squared_error(
           predictions1, labels1, name='msd1')
 
       sess.run(tf.initialize_local_variables())
@@ -1994,9 +2266,9 @@ class StreamingMeanSquaredErrorTest(tf.test.TestCase):
       _enqueue_vector(sess, labels_queue, [2, 4, 6])
       labels = labels_queue.dequeue()
 
-      mae, ma_update_op = tf.contrib.metrics.streaming_mean_absolute_error(
+      mae, ma_update_op = metrics.streaming_mean_absolute_error(
           predictions, labels)
-      mse, ms_update_op = tf.contrib.metrics.streaming_mean_squared_error(
+      mse, ms_update_op = metrics.streaming_mean_squared_error(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
@@ -2014,7 +2286,7 @@ class StreamingRootMeanSquaredErrorTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_root_mean_squared_error(
+    mean, _ = metrics.streaming_root_mean_squared_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         metrics_collections=[my_collection_name])
@@ -2022,27 +2294,16 @@ class StreamingRootMeanSquaredErrorTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
+    _, update_op = metrics.streaming_root_mean_squared_error(
         predictions=tf.ones((10, 1)),
         labels=tf.ones((10, 1)),
         updates_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
 
-  def testEffectivelyEquivalentShapes(self):
-    predictions = tf.ones((10, 3,))
-    labels = tf.ones((10, 3, 1))
-    error, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
-        predictions, labels)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertEqual(0.0, update_op.eval())
-      self.assertEqual(0.0, error.eval())
-
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_normal((10, 3), seed=1)
     labels = tf.random_normal((10, 3), seed=2)
-    error, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
+    error, update_op = metrics.streaming_root_mean_squared_error(
         predictions, labels)
 
     with self.test_session() as sess:
@@ -2062,11 +2323,11 @@ class StreamingRootMeanSquaredErrorTest(tf.test.TestCase):
       predictions = tf.constant(0.0, shape=(1, 3), dtype=tf.float32)
       labels = tf.constant(0.0, shape=(1, 3), dtype=tf.float32)
 
-      rmse, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
+      rmse, update_op = metrics.streaming_root_mean_squared_error(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0, sess.run(update_op))
 
       self.assertEqual(0, rmse.eval())
 
@@ -2075,7 +2336,7 @@ class StreamingRootMeanSquaredErrorTest(tf.test.TestCase):
       predictions = tf.constant([2, 4, 6], shape=(1, 3), dtype=tf.float32)
       labels = tf.constant([1, 3, 2], shape=(1, 3), dtype=tf.float32)
 
-      rmse, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
+      rmse, update_op = metrics.streaming_root_mean_squared_error(
           predictions, labels)
 
       sess.run(tf.initialize_local_variables())
@@ -2088,11 +2349,11 @@ class StreamingRootMeanSquaredErrorTest(tf.test.TestCase):
       labels = tf.constant([1, 3, 2, 3], shape=(1, 4), dtype=tf.float32)
       weights = tf.constant([0, 1, 0, 1], shape=(1, 4))
 
-      rmse, update_op = tf.contrib.metrics.streaming_root_mean_squared_error(
+      rmse, update_op = metrics.streaming_root_mean_squared_error(
           predictions, labels, weights)
 
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(math.sqrt(13), sess.run(update_op))
 
       self.assertAlmostEqual(math.sqrt(13), rmse.eval(), 5)
 
@@ -2104,7 +2365,7 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_mean_cosine_distance(
+    mean, _ = metrics.streaming_mean_cosine_distance(
         predictions=tf.ones((10, 3)),
         labels=tf.ones((10, 3)),
         dim=1,
@@ -2113,28 +2374,17 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    _, update_op = metrics.streaming_mean_cosine_distance(
         predictions=tf.ones((10, 3)),
         labels=tf.ones((10, 3)),
         dim=1,
         updates_collections=[my_collection_name])
     self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
 
-  def testEffectivelyEquivalentShapes(self):
-    predictions = tf.nn.l2_normalize(tf.ones((10, 3,)), dim=1)
-    labels = tf.nn.l2_normalize(tf.ones((10, 3, 1)), dim=1)
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
-        predictions, labels, dim=1)
-
-    with self.test_session() as sess:
-      sess.run(tf.initialize_local_variables())
-      self.assertAlmostEqual(0.0, update_op.eval(), 5)
-      self.assertAlmostEqual(0.0, error.eval(), 5)
-
   def testValueTensorIsIdempotent(self):
     predictions = tf.random_normal((10, 3), seed=1)
     labels = tf.random_normal((10, 3), seed=2)
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=1)
 
     with self.test_session() as sess:
@@ -2157,12 +2407,12 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
     predictions = tf.constant(np_labels, shape=(1, 3, 3), dtype=tf.float32)
     labels = tf.constant(np_labels, shape=(1, 3, 3), dtype=tf.float32)
 
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=2)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0, sess.run(update_op))
       self.assertEqual(0, error.eval())
 
   def testSingleUpdateWithError1(self):
@@ -2176,12 +2426,12 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
     predictions = tf.constant(np_predictions, shape=(3, 1, 3), dtype=tf.float32)
     labels = tf.constant(np_labels, shape=(3, 1, 3), dtype=tf.float32)
 
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=2)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(1, sess.run(update_op), 5)
       self.assertAlmostEqual(1, error.eval(), 5)
 
   def testSingleUpdateWithError2(self):
@@ -2196,12 +2446,12 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
 
     predictions = tf.constant(np_predictions, shape=(3, 1, 3), dtype=tf.float32)
     labels = tf.constant(np_labels, shape=(3, 1, 3), dtype=tf.float32)
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=2)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertAlmostEqual(1.0, sess.run(update_op), 5)
       self.assertAlmostEqual(1.0, error.eval(), 5)
 
   def testSingleUpdateWithErrorAndMissing1(self):
@@ -2216,12 +2466,12 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
     labels = tf.constant(np_labels, shape=(3, 1, 3), dtype=tf.float32)
     weights = tf.constant([1, 0, 0], shape=(3, 1, 1))
 
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=2, weights=weights)
 
     with self.test_session() as sess:
       sess.run(tf.initialize_local_variables())
-      sess.run(update_op)
+      self.assertEqual(0, sess.run(update_op))
       self.assertEqual(0, error.eval())
 
   def testSingleUpdateWithErrorAndMissing2(self):
@@ -2236,7 +2486,7 @@ class StreamingMeanCosineDistanceTest(tf.test.TestCase):
     labels = tf.constant(np_labels, shape=(3, 1, 3), dtype=tf.float32)
     weights = tf.constant([0, 1, 1], shape=(3, 1, 1))
 
-    error, update_op = tf.contrib.metrics.streaming_mean_cosine_distance(
+    error, update_op = metrics.streaming_mean_cosine_distance(
         predictions, labels, dim=2, weights=weights)
 
     with self.test_session() as sess:
@@ -2252,7 +2502,7 @@ class PcntBelowThreshTest(tf.test.TestCase):
 
   def testMetricsCollection(self):
     my_collection_name = '__metrics__'
-    mean, _ = tf.contrib.metrics.streaming_percentage_less(
+    mean, _ = metrics.streaming_percentage_less(
         values=tf.ones((10,)),
         threshold=2,
         metrics_collections=[my_collection_name])
@@ -2260,7 +2510,7 @@ class PcntBelowThreshTest(tf.test.TestCase):
 
   def testUpdatesCollection(self):
     my_collection_name = '__updates__'
-    _, update_op = tf.contrib.metrics.streaming_percentage_less(
+    _, update_op = metrics.streaming_percentage_less(
         values=tf.ones((10,)),
         threshold=2,
         updates_collections=[my_collection_name])
@@ -2271,11 +2521,11 @@ class PcntBelowThreshTest(tf.test.TestCase):
       values = tf.constant([2, 4, 6, 8], shape=(1, 4), dtype=tf.float32)
       ignore_mask = tf.constant([False, False, False, False], shape=(1, 4))
 
-      pcnt0, update_op0 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt0, update_op0 = metrics.streaming_percentage_less(
           values, 100, ignore_mask, name='high')
-      pcnt1, update_op1 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt1, update_op1 = metrics.streaming_percentage_less(
           values, 7, ignore_mask, name='medium')
-      pcnt2, update_op2 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt2, update_op2 = metrics.streaming_percentage_less(
           values, 1, ignore_mask, name='low')
 
       sess.run(tf.initialize_local_variables())
@@ -2291,11 +2541,11 @@ class PcntBelowThreshTest(tf.test.TestCase):
       values = tf.constant([2, 4, 6, 8], shape=(1, 4), dtype=tf.float32)
       ignore_mask = tf.constant([False, True, True, False], shape=(1, 4))
 
-      pcnt0, update_op0 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt0, update_op0 = metrics.streaming_percentage_less(
           values, 100, ignore_mask, name='high')
-      pcnt1, update_op1 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt1, update_op1 = metrics.streaming_percentage_less(
           values, 7, ignore_mask, name='medium')
-      pcnt2, update_op2 = tf.contrib.metrics.streaming_percentage_less(
+      pcnt2, update_op2 = metrics.streaming_percentage_less(
           values, 1, ignore_mask, name='low')
 
       sess.run(tf.initialize_local_variables())
@@ -2306,6 +2556,298 @@ class PcntBelowThreshTest(tf.test.TestCase):
       self.assertAlmostEqual(1.0, pcnt0, 5)
       self.assertAlmostEqual(0.5, pcnt1, 5)
       self.assertAlmostEqual(0.0, pcnt2, 5)
+
+
+class StreamingMeanIOUTest(tf.test.TestCase):
+
+  def setUp(self):
+    np.random.seed(1)
+    tf.reset_default_graph()
+
+  def testMetricsCollections(self):
+    my_collection_name = '__metrics__'
+    mean_iou, _ = metrics.streaming_mean_iou(
+        predictions=tf.ones([10, 1]),
+        labels=tf.ones([10, 1]),
+        num_classes=2,
+        metrics_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [mean_iou])
+
+  def testUpdatesCollection(self):
+    my_collection_name = '__updates__'
+    _, update_op = metrics.streaming_mean_iou(
+        predictions=tf.ones([10, 1]),
+        labels=tf.ones([10, 1]),
+        num_classes=2,
+        updates_collections=[my_collection_name])
+    self.assertListEqual(tf.get_collection(my_collection_name), [update_op])
+
+  def testPredictionsAndLabelsOfDifferentSizeRaisesValueError(self):
+    predictions = tf.ones([10, 3])
+    labels = tf.ones([10, 4])
+    with self.assertRaises(ValueError):
+      metrics.streaming_mean_iou(
+          predictions, labels, num_classes=2)
+
+  def testLabelsAndIgnoreMaskOfDifferentSizeRaisesValueError(self):
+    predictions = tf.ones([10])
+    labels = tf.ones([10])
+    ignore_mask = tf.cast(tf.ones([9]), tf.bool)
+    with self.assertRaises(ValueError):
+      metrics.streaming_mean_iou(
+          predictions, labels, num_classes=2, ignore_mask=ignore_mask)
+
+  def testIgnoreMaskIsNotBooleanRaisesTypeError(self):
+    predictions = tf.ones([10])
+    labels = tf.ones([10])
+    ignore_mask = tf.ones([10])
+    with self.assertRaises(TypeError):
+      metrics.streaming_mean_iou(
+          predictions, labels, num_classes=2, ignore_mask=ignore_mask)
+
+  def testValueTensorIsIdempotent(self):
+    num_classes = 3
+    predictions = tf.random_uniform([10], maxval=num_classes,
+                                    dtype=tf.int64, seed=1)
+    labels = tf.random_uniform([10], maxval=num_classes,
+                               dtype=tf.int64, seed=1)
+    miou, update_op = metrics.streaming_mean_iou(
+        predictions, labels, num_classes=num_classes)
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+
+      # Run several updates.
+      for _ in range(10):
+        sess.run(update_op)
+
+      # Then verify idempotency.
+      initial_miou = miou.eval()
+      for _ in range(10):
+        self.assertEqual(initial_miou, miou.eval())
+
+  def testMultipleUpdates(self):
+    num_classes = 3
+    with self.test_session() as sess:
+      # Create the queue that populates the predictions.
+      preds_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, preds_queue, [0])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [2])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [0])
+      predictions = preds_queue.dequeue()
+
+      # Create the queue that populates the labels.
+      labels_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, labels_queue, [0])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [2])
+      _enqueue_vector(sess, labels_queue, [1])
+      labels = labels_queue.dequeue()
+
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(5):
+        sess.run(update_op)
+      desired_output = np.mean([1.0/2.0, 1.0/4.0, 0.])
+      self.assertEqual(desired_output, miou.eval())
+
+  def testMultipleUpdatesWithIgnoreMask(self):
+    num_classes = 2
+    with self.test_session() as sess:
+      # Create the queue that populates the predictions.
+      preds_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, preds_queue, [0])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [0])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [0])
+      predictions = preds_queue.dequeue()
+
+      # Create the queue that populates the labels.
+      labels_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, labels_queue, [0])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [0])
+      _enqueue_vector(sess, labels_queue, [0])
+      labels = labels_queue.dequeue()
+
+      # Create the queue that populates the ignore_masks.
+      ignore_masks_queue = tf.FIFOQueue(5, dtypes=tf.bool, shapes=(1, 1))
+      _enqueue_vector(sess, ignore_masks_queue, [False])
+      _enqueue_vector(sess, ignore_masks_queue, [False])
+      _enqueue_vector(sess, ignore_masks_queue, [False])
+      _enqueue_vector(sess, ignore_masks_queue, [True])
+      _enqueue_vector(sess, ignore_masks_queue, [False])
+      ignore_mask = ignore_masks_queue.dequeue()
+
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes, ignore_mask)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(5):
+        sess.run(update_op)
+      desired_output = np.mean([2.0/3.0, 1.0/2.0])
+      self.assertAlmostEqual(desired_output, miou.eval())
+
+  def testMultipleUpdatesWithMissingClass(self):
+    # Test the case where there are no predicions and labels for
+    # one class, and thus there is one row and one column with
+    # zero entries in the confusion matrix.
+    num_classes = 3
+    with self.test_session() as sess:
+      # Create the queue that populates the predictions.
+      # There is no prediction for class 2.
+      preds_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, preds_queue, [0])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [1])
+      _enqueue_vector(sess, preds_queue, [0])
+      predictions = preds_queue.dequeue()
+
+      # Create the queue that populates the labels.
+      # There is label for class 2.
+      labels_queue = tf.FIFOQueue(5, dtypes=tf.int32, shapes=(1, 1))
+      _enqueue_vector(sess, labels_queue, [0])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [1])
+      _enqueue_vector(sess, labels_queue, [0])
+      _enqueue_vector(sess, labels_queue, [1])
+      labels = labels_queue.dequeue()
+
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes)
+
+      sess.run(tf.initialize_local_variables())
+      for _ in range(5):
+        sess.run(update_op)
+      desired_output = np.mean([1.0/3.0, 2.0/4.0, 0.])
+      self.assertAlmostEqual(desired_output, miou.eval())
+
+  def testUpdateOpEvalIsAccumulatedConfusionMatrix(self):
+    predictions = tf.concat(0,
+                            [tf.constant(0, shape=[5]),
+                             tf.constant(1, shape=[5])])
+    labels = tf.concat(0,
+                       [tf.constant(0, shape=[3]),
+                        tf.constant(1, shape=[7])])
+    num_classes = 2
+    with self.test_session() as sess:
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes)
+      sess.run(tf.initialize_local_variables())
+      confusion_matrix = update_op.eval()
+      self.assertAllEqual([[3, 2], [0, 5]], confusion_matrix)
+      desired_miou = np.mean([3./5., 5./7.])
+      self.assertAlmostEqual(desired_miou, miou.eval())
+
+  def testAllCorrect(self):
+    predictions = tf.zeros([40])
+    labels = tf.zeros([40])
+    num_classes = 1
+    with self.test_session() as sess:
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes)
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(40, update_op.eval()[0])
+      self.assertEqual(1.0, miou.eval())
+
+  def testAllWrong(self):
+    predictions = tf.zeros([40])
+    labels = tf.ones([40])
+    num_classes = 2
+    with self.test_session() as sess:
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes)
+      sess.run(tf.initialize_local_variables())
+      self.assertAllEqual([[0, 40], [0, 0]], update_op.eval())
+      self.assertEqual(0., miou.eval())
+
+  def testResultsWithIgnoreMask(self):
+    predictions = tf.concat(0,
+                            [tf.constant(0, shape=[5]),
+                             tf.constant(1, shape=[5])])
+    labels = tf.concat(0,
+                       [tf.constant(0, shape=[3]),
+                        tf.constant(1, shape=[7])])
+    num_classes = 2
+    ignore_mask = tf.concat(0,
+                            [tf.constant(1, shape=[1]),
+                             tf.constant(0, shape=[8]),
+                             tf.constant(1, shape=[1])])
+    ignore_mask = tf.cast(ignore_mask, tf.bool)
+    with self.test_session() as sess:
+      miou, update_op = metrics.streaming_mean_iou(
+          predictions, labels, num_classes, ignore_mask)
+      sess.run(tf.initialize_local_variables())
+      self.assertAllEqual([[2, 2], [0, 4]], update_op.eval())
+      desired_miou = np.mean([2./4., 4./6.])
+      self.assertAlmostEqual(desired_miou, miou.eval())
+
+
+class AggregateMetricsTest(tf.test.TestCase):
+
+  def testAggregateNoMetricsRaisesValueError(self):
+    with self.assertRaises(ValueError):
+      metrics.aggregate_metrics()
+
+  def testAggregateSingleMetricReturnsOneItemLists(self):
+    values = tf.ones((10, 4))
+    value_tensors, update_ops = metrics.aggregate_metrics(
+        metrics.streaming_mean(values))
+    self.assertEqual(len(value_tensors), 1)
+    self.assertEqual(len(update_ops), 1)
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(1, update_ops[0].eval())
+      self.assertEqual(1, value_tensors[0].eval())
+
+  def testAggregateMultipleMetricsReturnsListsInOrder(self):
+    predictions = tf.ones((10, 4))
+    labels = tf.ones((10, 4)) * 3
+    value_tensors, update_ops = metrics.aggregate_metrics(
+        metrics.streaming_mean_absolute_error(
+            predictions, labels),
+        metrics.streaming_mean_squared_error(
+            predictions, labels))
+    self.assertEqual(len(value_tensors), 2)
+    self.assertEqual(len(update_ops), 2)
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(2, update_ops[0].eval())
+      self.assertEqual(4, update_ops[1].eval())
+      self.assertEqual(2, value_tensors[0].eval())
+      self.assertEqual(4, value_tensors[1].eval())
+
+
+class AggregateMetricMapTest(tf.test.TestCase):
+
+  def testAggregateMultipleMetricsReturnsListsInOrder(self):
+    predictions = tf.ones((10, 4))
+    labels = tf.ones((10, 4)) * 3
+    names_to_values, names_to_updates = metrics.aggregate_metric_map(
+        {
+            'm1': metrics.streaming_mean_absolute_error(
+                predictions, labels),
+            'm2': metrics.streaming_mean_squared_error(
+                predictions, labels),
+        })
+
+    self.assertEqual(2, len(names_to_values))
+    self.assertEqual(2, len(names_to_updates))
+
+    with self.test_session() as sess:
+      sess.run(tf.initialize_local_variables())
+      self.assertEqual(2, names_to_updates['m1'].eval())
+      self.assertEqual(4, names_to_updates['m2'].eval())
+      self.assertEqual(2, names_to_values['m1'].eval())
+      self.assertEqual(4, names_to_values['m2'].eval())
 
 
 if __name__ == '__main__':

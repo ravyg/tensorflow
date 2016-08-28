@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,9 +89,9 @@ class Optimizer(object):
 
   ### Gating Gradients
 
-  Both `minimize()` and `compute_gradients()` accept a `gate_gradient` argument
-  that controls the degree of parallelism during the application of the
-  gradients.
+  Both `minimize()` and `compute_gradients()` accept a `gate_gradients`
+  argument that controls the degree of parallelism during the application of
+  the gradients.
 
   The possible values are: `GATE_NONE`, `GATE_OP`, and `GATE_GRAPH`.
 
@@ -151,6 +151,9 @@ class Optimizer(object):
     # Dictionary of slots.
     #  {slot_name : { variable_to_train: slot_for_the_variable, ...}, ... }
     self._slots = {}
+
+  def get_name(self):
+    return self._name
 
   def minimize(self, loss, global_step=None, var_list=None,
                gate_gradients=GATE_OP, aggregation_method=None,
@@ -296,7 +299,7 @@ class Optimizer(object):
     with ops.control_dependencies(None):
       self._create_slots(var_list)
     update_ops = []
-    with ops.op_scope([], name, self._name) as name:
+    with ops.name_scope(name, self._name) as name:
       self._prepare()
       for grad, var in grads_and_vars:
         if grad is None:

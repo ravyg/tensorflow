@@ -1,42 +1,54 @@
 TensorFlow RNN Classifier model.
+- - -
 
-Parameters:
-  rnn_size: The size for rnn cell, e.g. size of your word embeddings.
-  cell_type: The type of rnn cell, including rnn, gru, and lstm.
-  num_layers: The number of layers of the rnn model.
-  input_op_fn: Function that will transform the input tensor, such as
+#### `tf.contrib.learn.TensorFlowRNNClassifier.__init__(rnn_size, n_classes, cell_type='gru', num_layers=1, input_op_fn=null_input_op_fn, initial_state=None, bidirectional=False, sequence_length=None, attn_length=None, attn_size=None, attn_vec_size=None, batch_size=32, steps=50, optimizer='Adagrad', learning_rate=0.1, class_weight=None, clip_gradients=5.0, continue_training=False, config=None, verbose=1)` {#TensorFlowRNNClassifier.__init__}
+
+Initializes a TensorFlowRNNClassifier instance.
+
+##### Args:
+
+
+*  <b>`rnn_size`</b>: The size for rnn cell, e.g. size of your word embeddings.
+*  <b>`cell_type`</b>: The type of rnn cell, including rnn, gru, and lstm.
+*  <b>`num_layers`</b>: The number of layers of the rnn model.
+*  <b>`input_op_fn`</b>: Function that will transform the input tensor, such as
     creating word embeddings, byte list, etc. This takes
-    an argument X for input and returns transformed X.
-  bidirectional: boolean, Whether this is a bidirectional rnn.
-  sequence_length: If sequence_length is provided, dynamic calculation is
-    performed. This saves computational time when unrolling past max sequence
-    length.
-  initial_state: An initial state for the RNN. This must be a tensor of
+    an argument x for input and returns transformed x.
+*  <b>`bidirectional`</b>: boolean, Whether this is a bidirectional rnn.
+*  <b>`sequence_length`</b>: If sequence_length is provided, dynamic calculation
+    is performed. This saves computational time when unrolling past max
+    sequence length.
+*  <b>`initial_state`</b>: An initial state for the RNN. This must be a tensor of
     appropriate type and shape [batch_size x cell.state_size].
-  n_classes: Number of classes in the target.
-  batch_size: Mini batch size.
-  steps: Number of steps to run over data.
-  optimizer: Optimizer name (or class), for example "SGD", "Adam", "Adagrad".
-  learning_rate: If this is constant float value, no decay function is
+*  <b>`attn_length`</b>: integer, the size of attention vector attached to rnn cells.
+*  <b>`attn_size`</b>: integer, the size of an attention window attached to rnn cells.
+*  <b>`attn_vec_size`</b>: integer, the number of convolutional features calculated on
+    attention state and the size of the hidden layer built from base cell state.
+*  <b>`n_classes`</b>: Number of classes in the target.
+*  <b>`batch_size`</b>: Mini batch size.
+*  <b>`steps`</b>: Number of steps to run over data.
+*  <b>`optimizer`</b>: Optimizer name (or class), for example "SGD", "Adam",
+    "Adagrad".
+*  <b>`learning_rate`</b>: If this is constant float value, no decay function is
     used. Instead, a customized decay function can be passed that accepts
     global_step as parameter and returns a Tensor.
     e.g. exponential decay function:
+
+    ````python
     def exp_decay(global_step):
         return tf.train.exponential_decay(
             learning_rate=0.1, global_step,
             decay_steps=2, decay_rate=0.001)
-  class_weight: None or list of n_classes floats. Weight associated with
+    ````
+
+
+*  <b>`class_weight`</b>: None or list of n_classes floats. Weight associated with
     classes for loss computation. If not given, all classes are
     supposed to have weight one.
-  continue_training: when continue_training is True, once initialized
+*  <b>`continue_training`</b>: when continue_training is True, once initialized
     model will be continuely trained on every call of fit.
-  config: RunConfig object that controls the configurations of the session,
+*  <b>`config`</b>: RunConfig object that controls the configurations of the session,
     e.g. num_cores, gpu_memory_fraction, etc.
-- - -
-
-#### `tf.contrib.learn.TensorFlowRNNClassifier.__init__(rnn_size, n_classes, cell_type='gru', num_layers=1, input_op_fn=null_input_op_fn, initial_state=None, bidirectional=False, sequence_length=None, batch_size=32, steps=50, optimizer='Adagrad', learning_rate=0.1, class_weight=None, clip_gradients=5.0, continue_training=False, config=None, verbose=1)` {#TensorFlowRNNClassifier.__init__}
-
-
 
 
 - - -
@@ -48,9 +60,54 @@ Returns bias of the rnn layer.
 
 - - -
 
-#### `tf.contrib.learn.TensorFlowRNNClassifier.evaluate(x=None, y=None, input_fn=None, steps=None)` {#TensorFlowRNNClassifier.evaluate}
+#### `tf.contrib.learn.TensorFlowRNNClassifier.config` {#TensorFlowRNNClassifier.config}
 
-See base class.
+
+
+
+- - -
+
+#### `tf.contrib.learn.TensorFlowRNNClassifier.evaluate(x=None, y=None, input_fn=None, feed_fn=None, batch_size=None, steps=None, metrics=None, name=None)` {#TensorFlowRNNClassifier.evaluate}
+
+Evaluates given model with provided evaluation data.
+
+See superclass Estimator for more details.
+
+##### Args:
+
+
+*  <b>`x`</b>: features.
+*  <b>`y`</b>: targets.
+*  <b>`input_fn`</b>: Input function.
+*  <b>`feed_fn`</b>: Function creating a feed dict every time it is called.
+*  <b>`batch_size`</b>: minibatch size to use on the input.
+*  <b>`steps`</b>: Number of steps for which to evaluate model.
+*  <b>`metrics`</b>: Dict of metric ops to run. If None, the default metrics are used.
+*  <b>`name`</b>: Name of the evaluation.
+
+##### Returns:
+
+  Returns `dict` with evaluation results.
+
+
+- - -
+
+#### `tf.contrib.learn.TensorFlowRNNClassifier.export(export_dir, signature_fn=None, input_fn=None, default_batch_size=1, exports_to_keep=None)` {#TensorFlowRNNClassifier.export}
+
+Exports inference graph into given dir.
+
+##### Args:
+
+
+*  <b>`export_dir`</b>: A string containing a directory to write the exported graph
+    and checkpoints.
+*  <b>`signature_fn`</b>: Function that returns a default signature and a named
+    signature map, given `Tensor` of `Example` strings, `dict` of `Tensor`s
+    for features and `Tensor` or `dict` of `Tensor`s for predictions.
+*  <b>`input_fn`</b>: Function that given `Tensor` of `Example` strings, parses it
+    into features that are then passed to the model.
+*  <b>`default_batch_size`</b>: Default batch size of the `Example` placeholder.
+*  <b>`exports_to_keep`</b>: Number of exports to keep.
 
 
 - - -
@@ -62,7 +119,6 @@ Neural network model from provided `model_fn` and training data.
 Note: called first time constructs the graph and initializers
 variables. Consecutives times it will continue training the same model.
 This logic follows partial_fit() interface in scikit-learn.
-
 To restart learning, create new estimator.
 
 ##### Args:
@@ -98,7 +154,8 @@ Get parameters for this estimator.
 
 
 *  <b>`deep`</b>: boolean, optional
-    If True, will return the parameters for this estimator and
+
+    If `True`, will return the parameters for this estimator and
     contained subobjects that are estimators.
 
 ##### Returns:
@@ -121,22 +178,6 @@ Returns tensor by name.
 ##### Returns:
 
   Tensor.
-
-
-- - -
-
-#### `tf.contrib.learn.TensorFlowRNNClassifier.get_tensor_value(name)` {#TensorFlowRNNClassifier.get_tensor_value}
-
-Returns value of the tensor give by name.
-
-##### Args:
-
-
-*  <b>`name`</b>: string, name of the tensor.
-
-##### Returns:
-
-  Numpy array - value of the tensor.
 
 
 - - -
@@ -182,7 +223,6 @@ Incremental fit on a batch of samples.
 This method is expected to be called several times consecutively
 on different or the same chunks of the dataset. This either can
 implement iterative training or out-of-core/online training.
-
 This is especially useful when the whole dataset is too big to
 fit in memory at the same time. Or when model is taking long time
 to converge, and you want to split up training into subparts.
@@ -207,10 +247,10 @@ to converge, and you want to split up training into subparts.
 
 #### `tf.contrib.learn.TensorFlowRNNClassifier.predict(x, axis=1, batch_size=None)` {#TensorFlowRNNClassifier.predict}
 
-Predict class or regression for X.
+Predict class or regression for `x`.
 
-For a classification model, the predicted class for each sample in X is
-returned. For a regression model, the predicted value based on X is
+For a classification model, the predicted class for each sample in `x` is
+returned. For a regression model, the predicted value based on `x` is
 returned.
 
 ##### Args:
@@ -235,7 +275,7 @@ returned.
 
 #### `tf.contrib.learn.TensorFlowRNNClassifier.predict_proba(x, batch_size=None)` {#TensorFlowRNNClassifier.predict_proba}
 
-Predict class probability of the input samples X.
+Predict class probability of the input samples `x`.
 
 ##### Args:
 
@@ -311,26 +351,6 @@ component of a nested object.
 
 
 *  <b>`ValueError`</b>: If params contain invalid names.
-
-
-- - -
-
-#### `tf.contrib.learn.TensorFlowRNNClassifier.train(input_fn, steps, monitors=None)` {#TensorFlowRNNClassifier.train}
-
-Trains a model given input builder function.
-
-##### Args:
-
-
-*  <b>`input_fn`</b>: Input builder function, returns tuple of dicts or
-            dict and Tensor.
-*  <b>`steps`</b>: number of steps to train model for.
-*  <b>`monitors`</b>: List of `BaseMonitor` subclass instances. Used for callbacks
-            inside the training loop.
-
-##### Returns:
-
-  Returns self.
 
 
 - - -

@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ TENSORBOARD_SIZE_GUIDANCE = {
     event_accumulator.IMAGES: 4,
     event_accumulator.AUDIO: 4,
     event_accumulator.SCALARS: 1000,
-    event_accumulator.HISTOGRAMS: 1,
+    event_accumulator.HISTOGRAMS: 50,
 }
 
 
@@ -80,11 +80,8 @@ def ParseEventFilesSpec(logdir):
     else:
       run_name = None
       path = specification
-
-    if not os.path.isabs(path) and not gcs.IsGCSPath(path):
-      # Create absolute path out of relative one.
-      path = os.path.join(os.path.realpath('.'), path)
-
+    if not gcs.IsGCSPath(path):
+      path = os.path.realpath(path)
     files[path] = run_name
   return files
 

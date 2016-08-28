@@ -13,18 +13,28 @@ file(GLOB_RECURSE tf_core_kernels_exclude_srcs
    "${tensorflow_source_dir}/tensorflow/core/kernels/*testutil.cc"
    "${tensorflow_source_dir}/tensorflow/core/kernels/*main.cc"
    "${tensorflow_source_dir}/tensorflow/core/kernels/*.cu.cc"
+   "${tensorflow_source_dir}/tensorflow/core/kernels/debug_ops.h"
+   "${tensorflow_source_dir}/tensorflow/core/kernels/debug_ops.cc"
 )
 
 list(REMOVE_ITEM tf_core_kernels_srcs ${tf_core_kernels_exclude_srcs}) 
 
 add_library(tf_core_kernels OBJECT ${tf_core_kernels_srcs})
 
-add_dependencies(tf_core_kernels tf_core_cpu)
+add_dependencies(tf_core_kernels
+   tf_core_cpu
+   farmhash
+   highwayhash
+   farmhash_copy_headers_to_destination
+   highwayhash_copy_headers_to_destination
+)
 
 target_include_directories(tf_core_kernels PRIVATE
    ${tensorflow_source_dir}
    ${png_INCLUDE_DIR}
    ${eigen_INCLUDE_DIRS}
+   ${farmhash_INCLUDE_DIR}
+   ${highwayhash_INCLUDE_DIR}
 )
 
 #target_link_libraries(tf_core_kernels

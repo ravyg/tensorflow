@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -78,6 +78,28 @@ class DirectoryWatcher(object):
 
     Yields:
       All values that have not been yielded yet.
+
+    Raises:
+      DirectoryDeletedError: If the directory has been permanently deleted
+        (as opposed to being temporarily unavailable).
+    """
+    try:
+      for event in self._LoadInternal():
+        yield event
+    except (IOError, OSError):
+      if not io_wrapper.Exists(self._directory):
+        raise DirectoryDeletedError(
+            'Directory %s has been permanently deleted' % self._directory)
+
+  def _LoadInternal(self):
+    """Internal implementation of Load().
+
+    The only difference between this and Load() is that the latter will throw
+    DirectoryDeletedError on I/O errors if it thinks that the directory has been
+    permanently deleted.
+
+    Yields:
+      All values that have not been yielded yet.
     """
 
     # If the loader exists, check it for a value.
@@ -146,12 +168,23 @@ class DirectoryWatcher(object):
       raise StopIteration
 
   def _SetPath(self, path):
+    """Sets the current path to watch for new events.
+
+    This also records the size of the old path, if any. If the size can't be
+    found, an error is logged.
+
+    Args:
+      path: The full path of the file to watch.
+    """
     old_path = self._path
     if old_path and not gcs.IsGCSPath(old_path):
-      # We're done with the path, so store its size.
-      size = io_wrapper.Size(old_path)
-      logging.debug('Setting latest size of %s to %d', old_path, size)
-      self._finalized_sizes[old_path] = size
+      try:
+        # We're done with the path, so store its size.
+        size = io_wrapper.Size(old_path)
+        logging.debug('Setting latest size of %s to %d', old_path, size)
+        self._finalized_sizes[old_path] = size
+      except (IOError, OSError) as e:
+        logging.error('Unable to get size of %s: %s', old_path, e)
 
     self._path = path
     self._loader = self._loader_factory(path)
@@ -208,3 +241,13 @@ class DirectoryWatcher(object):
       return True
     else:
       return False
+
+
+class DirectoryDeletedError(Exception):
+  """Thrown by Load() when the directory is *permanently* gone.
+
+  We distinguish this from temporary errors so that other code can decide to
+  drop all of our data only when a directory has been intentionally deleted,
+  as opposed to due to transient filesystem errors.
+  """
+  pass

@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,8 +41,8 @@ class OpError(Exception):
     """Creates a new `OpError` indicating that a particular op failed.
 
     Args:
-      node_def: The `graph_pb2.NodeDef` proto representing the op that failed,
-        if known; otherwise None.
+      node_def: The `node_def_pb2.NodeDef` proto representing the op that
+        failed, if known; otherwise None.
       op: The `ops.Operation` that failed, if known; otherwise None.
       message: The message string describing the failure.
       error_code: The `error_codes_pb2.Code` describing the error.

@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,11 +22,15 @@
 @@is_numeric_tensor
 @@is_non_decreasing
 @@is_strictly_increasing
+@@is_tensor
 @@reduce_sum_n
 @@safe_embedding_lookup_sparse
 @@with_shape
 @@with_same_shape
 
+## Deprecation
+@@deprecated
+@@deprecated_arg_values
 
 ## Arg_Scope
 @@arg_scope
@@ -38,6 +42,10 @@
 @@add_model_variable
 @@assert_global_step
 @@assert_or_get_global_step
+@@assign_from_checkpoint
+@@assign_from_checkpoint_fn
+@@assign_from_values
+@@assign_from_values_fn
 @@create_global_step
 @@get_global_step
 @@get_or_create_global_step

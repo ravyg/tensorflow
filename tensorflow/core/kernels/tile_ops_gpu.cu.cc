@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "tensorflow/core/kernels/tile_ops.h"
 #include <stdio.h>
+#include "tensorflow/core/kernels/tile_ops_impl.h"
 
 namespace tensorflow {
 namespace functor {
@@ -30,7 +30,8 @@ typedef Eigen::GpuDevice GPUDevice;
   DEFINE_DIM(T, 2)     \
   DEFINE_DIM(T, 3)     \
   DEFINE_DIM(T, 4)     \
-  DEFINE_DIM(T, 5)
+  DEFINE_DIM(T, 5)     \
+  DEFINE_DIM(T, 6)
 
 #define DEFINE_DIM(T, NDIM)                     \
   template struct Tile<GPUDevice, T, NDIM>;     \

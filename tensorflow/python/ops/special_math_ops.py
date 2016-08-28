@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ def lbeta(x, name='lbeta'):
   Raises:
     ValueError:  If `x` is empty with rank one or less.
   """
-  with ops.op_scope([x], name):
+  with ops.name_scope(name, values=[x]):
     x = ops.convert_to_tensor(x, name='x')
     x = control_flow_ops.with_dependencies(
         [check_ops.assert_rank_at_least(x, 1)], x)
@@ -64,14 +64,11 @@ def lbeta(x, name='lbeta'):
     is_empty = math_ops.equal(0, array_ops.size(x))
 
     def nonempty_lbeta():
-      last_index = array_ops.size(array_ops.shape(x)) - 1
       log_prod_gamma_x = math_ops.reduce_sum(
-          math_ops.lgamma(x),
-          reduction_indices=last_index)
-      sum_x = math_ops.reduce_sum(x, reduction_indices=last_index)
+          math_ops.lgamma(x), reduction_indices=[-1])
+      sum_x = math_ops.reduce_sum(x, reduction_indices=[-1])
       log_gamma_sum_x = math_ops.lgamma(sum_x)
       result = log_prod_gamma_x - log_gamma_sum_x
-      result.set_shape(x.get_shape()[:-1])
       return result
 
     def empty_lbeta():

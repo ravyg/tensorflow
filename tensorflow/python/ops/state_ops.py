@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -67,7 +67,9 @@ create variables contingent on certain conditions.
 
 ## Variable Partitioners for Sharding
 
+@@fixed_size_partitioner
 @@variable_axis_size_partitioner
+@@min_max_variable_partitioner
 
 ## Sparse Variable Updates
 
@@ -101,10 +103,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.python.framework import common_shapes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
-from tensorflow.python.ops import common_shapes
 from tensorflow.python.ops import gen_state_ops
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
@@ -182,7 +184,7 @@ def init_variable(v, init, name="init"):
   Returns:
     The operation that initializes v.
   """
-  with ops.op_scope([v, init], None, v.op.name + "/"):
+  with ops.name_scope(None, v.op.name + "/", [v, init]):
     with ops.name_scope(name) as scope:
       with ops.colocate_with(v):
         if callable(init):

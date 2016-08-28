@@ -39,14 +39,20 @@ set (DOWNLOAD_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/downloads"
 mark_as_advanced(DOWNLOAD_LOCATION)
 
 # External dependencies
+include(gif)
 include(png)
 include(jpeg)
 include(re2)
 include(eigen)
+include(jsoncpp)
+include(boringssl)
+include(farmhash)
+include(highwayhash)
 
 # Let's get to work!
 include(tf_core_framework.cmake)
-include(tf_stream_executor.cmake)
+# NOTE: Disabled until issue #3996 is fixed.
+# include(tf_stream_executor.cmake)
 include(tf_core_cpu.cmake)
 include(tf_models.cmake)
 include(tf_core_ops.cmake)
@@ -54,6 +60,7 @@ include(tf_core_direct_session.cmake)
 include(tf_core_kernels.cmake)
 include(tf_cc_ops.cmake)
 include(tf_tutorials.cmake)
+include(tf_tools.cmake)
 
 if (tensorflow_BUILD_TESTS)
   include(tests.cmake)

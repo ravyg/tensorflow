@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/common_runtime/function.h"
+
+#include <atomic>
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
@@ -36,9 +38,7 @@ namespace tensorflow {
 typedef FunctionDefHelper FDH;
 
 Status GetOpSig(const string& op, const OpDef** sig) {
-  Status s;
-  *sig = OpRegistry::Global()->LookUp(op, &s);
-  return s;
+  return OpRegistry::Global()->LookUpOpDef(op, sig);
 }
 
 void FunctionTestSchedClosure(std::function<void()> fn) {
@@ -146,10 +146,10 @@ class FunctionLibraryRuntimeTest : public ::testing::Test {
     FunctionDefLibrary proto;
     for (auto fdef : flib) *(proto.add_function()) = fdef;
     delete lib_def_;
-    lib_def_ = new FunctionLibraryDefinition(proto);
+    lib_def_ = new FunctionLibraryDefinition(OpRegistry::Global(), proto);
     delete lib_;
     OptimizerOptions opts;
-    lib_ = NewFunctionLibraryRuntime(nullptr, device_, FunctionTestSchedClosure,
+    lib_ = NewFunctionLibraryRuntime(nullptr, Env::Default(), device_,
                                      TF_GRAPH_DEF_VERSION, lib_def_, opts);
   }
 
@@ -160,8 +160,17 @@ class FunctionLibraryRuntimeTest : public ::testing::Test {
     if (!status.ok()) {
       return status;
     }
+
+    std::atomic<int32> call_count(0);
+    std::function<void(std::function<void()>)> runner =
+        [&call_count](std::function<void()> fn) {
+          ++call_count;
+          FunctionTestSchedClosure(fn);
+        };
+
     Notification done;
     FunctionLibraryRuntime::Options opts;
+    opts.runner = &runner;
     std::vector<Tensor> out;
     lib_->Run(opts, handle, args, &out, [&status, &done](const Status& s) {
       status = s;
@@ -175,6 +184,9 @@ class FunctionLibraryRuntimeTest : public ::testing::Test {
     for (size_t i = 0; i < rets.size(); ++i) {
       *rets[i] = out[i];
     }
+
+    EXPECT_GE(call_count, 1);  // Test runner is used.
+
     return Status::OK();
   }
 
@@ -245,7 +257,7 @@ TEST_F(FunctionLibraryRuntimeTest, ExpandInlineFunctions) {
   Init({test::function::XTimesTwo(), test::function::XTimesFour(),
         test::function::XTimes16()});
   Graph* g = GetFuncBody("XTimes16", {{"T", DT_FLOAT}});
-  CHECK(g);
+  ASSERT_TRUE(g != nullptr);
   const char* e0 = R"P(
 (n2:float) -> (n4:float) {
   n3 = XTimesFour[T=float](n2)
@@ -330,7 +342,7 @@ TEST_F(FunctionLibraryRuntimeTest, OptimizeGraph) {
   Init({test::function::XTimesTwo(), test::function::XTimesFour(),
         test::function::XTimes16()});
   Graph* g = GetFuncBody("XTimes16", {{"T", DT_FLOAT}});
-  CHECK(g);
+  ASSERT_TRUE(g != nullptr);
   ExpandInlineFunctions(lib_, g);
   OptimizeGraph(lib_, &g);
   const char* e0 = R"P(
@@ -346,8 +358,8 @@ TEST_F(FunctionLibraryRuntimeTest, OptimizeGraph) {
   delete g;
 }
 
-TEST_F(FunctionLibraryRuntimeTest, ManySwaps) {
-  auto func = FDH::Define(
+TEST_F(FunctionLibraryRuntimeTest, ManySwapsOld) {
+  auto func = FDH::Define(  // Creates a FunctionDef using FunctionDef::Nodes
       // Name
       "ManySwapsFirst",
       // Args
@@ -365,8 +377,41 @@ TEST_F(FunctionLibraryRuntimeTest, ManySwaps) {
        {{"a5", "b5"}, "Swap", {"a4", "b4"}, {{"T", DT_FLOAT}}},
        {{"o"}, "Identity", {"a5"}, {{"T", DT_FLOAT}}}});
   Init({test::function::Swap(), func});
-  Graph* g = GetFuncBody("ManySwapsFirst", {{"T", DT_FLOAT}});
-  CHECK(g);
+  Graph* g = GetFuncBody("ManySwapsFirst", {});
+  ASSERT_TRUE(g != nullptr);
+  OptimizeGraph(lib_, &g);
+  const char* e0 = R"P(
+(n3:float, n2:float) -> (n3:float) {
+}
+)P";
+  EXPECT_EQ(e0, DebugString(g));
+  delete g;
+}
+
+// Like the above test, but using NodeDefs in the FunctionDef.
+TEST_F(FunctionLibraryRuntimeTest, ManySwapsNodeDef) {
+  auto func = FDH::Create(  // Creates a FunctionDef using NodeDefs
+      // Name
+      "ManySwapsNodeDef",
+      // Input
+      {"x: float", "y: float"},
+      // Output
+      {"o: float"},
+      // Attr
+      {},
+      // Nodes
+      {{{"a"}, "Swap", {"x", "y"}, {{"T", DT_FLOAT}}},
+       {{"b"}, "Swap", {"a:o0", "a:o1"}, {{"T", DT_FLOAT}}},
+       {{"c"}, "Swap", {"b:o0", "b:o1"}, {{"T", DT_FLOAT}}},
+       {{"d"}, "Swap", {"c:o0", "c:o1"}, {{"T", DT_FLOAT}}},
+       {{"e"}, "Swap", {"d:o0", "d:o1"}, {{"T", DT_FLOAT}}},
+       {{"f"}, "Swap", {"e:o0", "e:o1"}, {{"T", DT_FLOAT}}},
+       {{"g"}, "Identity", {"f:o0"}, {{"T", DT_FLOAT}}}},
+      // Return
+      {{"o", "g:output"}});
+  Init({test::function::Swap(), func});
+  Graph* g = GetFuncBody("ManySwapsNodeDef", {});
+  ASSERT_TRUE(g != nullptr);
   OptimizeGraph(lib_, &g);
   const char* e0 = R"P(
 (n3:float, n2:float) -> (n3:float) {
@@ -398,8 +443,8 @@ TEST_F(FunctionLibraryRuntimeTest, ControlDeps) {
        {{"y2"}, "Mul", {"y", "y"}, {{"T", DT_FLOAT}}, {"a1"}},
        {{"o"}, "Add", {"x2", "y2"}, {{"T", DT_FLOAT}}}});
   Init({test::function::Swap(), func});
-  Graph* g = GetFuncBody("ManySwapsFirst", {{"T", DT_FLOAT}});
-  CHECK(g);
+  Graph* g = GetFuncBody("ManySwapsFirst", {});
+  ASSERT_TRUE(g != nullptr);
   OptimizeGraph(lib_, &g);
 
   // NOTE: We can remove n8, n9, n10, n11 with a control edge n8->n5.
@@ -576,7 +621,7 @@ TEST_F(FunctionLibraryRuntimeTest, Gradient_AddSum) {
   Init({test, grad});
 
   Graph* g = GetFuncBody("TestGrad", {});
-  CHECK(g);
+  ASSERT_TRUE(g != nullptr);
   const char* e0 = R"P(
 (n4:float, n3:float) -> (n8:float, n6:float) {
   n2 = Const[dtype=float, value=Tensor<type: float shape: [] values: 1>]()

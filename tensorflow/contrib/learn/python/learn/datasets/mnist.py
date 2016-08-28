@@ -1,4 +1,3 @@
-# pylint: disable=g-bad-file-header
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -86,7 +85,8 @@ class DataSet(object):
                labels,
                fake_data=False,
                one_hot=False,
-               dtype=dtypes.float32):
+               dtype=dtypes.float32,
+               reshape=True):
     """Construct a DataSet.
     one_hot arg is used only if fake_data is true.  `dtype` can be either
     `uint8` to leave the input as `[0, 255]`, or `float32` to rescale into
@@ -106,9 +106,10 @@ class DataSet(object):
 
       # Convert shape from [num examples, rows, columns, depth]
       # to [num examples, rows*columns] (assuming depth == 1)
-      assert images.shape[3] == 1
-      images = images.reshape(images.shape[0],
-                              images.shape[1] * images.shape[2])
+      if reshape:
+        assert images.shape[3] == 1
+        images = images.reshape(images.shape[0],
+                                images.shape[1] * images.shape[2])
       if dtype == dtypes.float32:
         # Convert from [0, 255] -> [0.0, 1.0].
         images = images.astype(numpy.float32)
@@ -166,7 +167,9 @@ class DataSet(object):
 def read_data_sets(train_dir,
                    fake_data=False,
                    one_hot=False,
-                   dtype=dtypes.float32):
+                   dtype=dtypes.float32,
+                   reshape=True,
+                   validation_size=5000):
   if fake_data:
 
     def fake():
@@ -181,7 +184,6 @@ def read_data_sets(train_dir,
   TRAIN_LABELS = 'train-labels-idx1-ubyte.gz'
   TEST_IMAGES = 't10k-images-idx3-ubyte.gz'
   TEST_LABELS = 't10k-labels-idx1-ubyte.gz'
-  VALIDATION_SIZE = 5000
 
   local_file = base.maybe_download(TRAIN_IMAGES, train_dir,
                                    SOURCE_URL + TRAIN_IMAGES)
@@ -199,17 +201,25 @@ def read_data_sets(train_dir,
                                    SOURCE_URL + TEST_LABELS)
   test_labels = extract_labels(local_file, one_hot=one_hot)
 
-  validation_images = train_images[:VALIDATION_SIZE]
-  validation_labels = train_labels[:VALIDATION_SIZE]
-  train_images = train_images[VALIDATION_SIZE:]
-  train_labels = train_labels[VALIDATION_SIZE:]
+  if not 0 <= validation_size <= len(train_images):
+    raise ValueError(
+        'Validation size should be between 0 and {}. Received: {}.'
+        .format(len(train_images), validation_size))
 
-  train = DataSet(train_images, train_labels, dtype=dtype)
-  validation = DataSet(validation_images, validation_labels, dtype=dtype)
-  test = DataSet(test_images, test_labels, dtype=dtype)
+  validation_images = train_images[:validation_size]
+  validation_labels = train_labels[:validation_size]
+  train_images = train_images[validation_size:]
+  train_labels = train_labels[validation_size:]
+
+  train = DataSet(train_images, train_labels, dtype=dtype, reshape=reshape)
+  validation = DataSet(validation_images,
+                       validation_labels,
+                       dtype=dtype,
+                       reshape=reshape)
+  test = DataSet(test_images, test_labels, dtype=dtype, reshape=reshape)
 
   return base.Datasets(train=train, validation=validation, test=test)
 
 
-def load_mnist():
-  return read_data_sets('MNIST_data')
+def load_mnist(train_dir='MNIST-data'):
+  return read_data_sets(train_dir)

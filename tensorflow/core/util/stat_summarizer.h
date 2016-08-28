@@ -1,4 +1,4 @@
-/* Copyright 2016 Google Inc. All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -69,9 +69,9 @@ class Stat {
                    : static_cast<HighPrecisionValueType>(sum_) / count_;
   }
 
-  ValueType rms() const { return sqrt(squared_sum_ / count_); }
-
-  ValueType std_deviation() const { return all_same() ? 0 : rms() - avg(); }
+  ValueType std_deviation() const {
+    return all_same() ? 0 : sqrt(squared_sum_ / count_ - avg() * avg());
+  }
 
   void OutputToStream(std::ostream* stream) const {
     if (empty()) {
@@ -115,6 +115,9 @@ class StatSummarizer {
   // can be pasted into a spreadsheet for further analysis.
   void PrintStepStats() const;
 
+  // Prints the output tensor sizes and types for each node.
+  void PrintOutputs() const;
+
   // Summarizes all nodes' stat in the order of node names defined in the graph.
   std::string GetStatsByOrderOfNodeDefinitions() const;
 
@@ -130,7 +133,7 @@ class StatSummarizer {
 
   void Reset() {
     run_total_micros_.Reset();
-    timing_details_.clear();
+    details_.clear();
   }
 
   // Returns number of runs.
@@ -144,6 +147,7 @@ class StatSummarizer {
     int64 first_start_micros;
     int64 first_rel_end_micros;
     int64 total_micros;
+    std::vector<TensorDescription> outputs;
   };
 
   enum struct SortingMetric {
@@ -163,7 +167,7 @@ class StatSummarizer {
   int64 first_node_start_micros_;
   Stat<int64> run_total_micros_;
   std::vector<string> nodes_in_def_order_;
-  std::map<std::string, Detail> timing_details_;
+  std::map<std::string, Detail> details_;
   std::map<string, string> node_types_;
 };
 

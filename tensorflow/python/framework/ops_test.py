@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.python.framework import common_shapes
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import device as pydev
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
@@ -26,9 +28,8 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import test_ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework import versions
-from tensorflow.python.ops import common_shapes
-from tensorflow.python.ops import constant_op
 # Import gradients to register _IndexedSlicesToTensor.
+from tensorflow.python.ops import control_flow_ops
 import tensorflow.python.ops.gradients  # pylint: disable=unused-import
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope
@@ -262,6 +263,8 @@ class OperationTest(test_util.TensorFlowTestCase):
       ops.Operation(ops._NodeDef("op", "-invalid"), g)
     with self.assertRaises(ValueError):
       ops.Operation(ops._NodeDef("op", "/invalid"), g)
+    with self.assertRaises(ValueError):
+      ops.Operation(ops._NodeDef("op", "invalid:0"), g)
 
   def testShapeFunctionAbsence(self):
     def _test():
@@ -276,6 +279,14 @@ class OperationTest(test_util.TensorFlowTestCase):
                        output_types = [dtypes.float32])
     self.assertEqual(tensor_shape.unknown_shape(),
                      _apply_op(g, "an_op", [], [dtypes.float32]).get_shape())
+
+  def testNoConvert(self):
+    # Operation cannot be converted to Tensor
+    op = control_flow_ops.no_op()
+    with self.assertRaisesRegexp(TypeError,
+                                 r"Can't convert Operation '.*' to Tensor"):
+      ops.convert_to_tensor(op)
+
 
 class CreateOpTest(test_util.TensorFlowTestCase):
 
@@ -444,6 +455,20 @@ class NameStackTest(test_util.TensorFlowTestCase):
     self.assertEqual("foo", g.unique_name("foo"))
     self.assertEqual("foo_1", g.unique_name("foo"))
     self.assertEqual("foo_3", g.unique_name("foo"))
+
+  def testInvalidNameRaisesError(self):
+    g = ops.Graph()
+    with g.name_scope(""):  # Should not raise
+      pass
+    with g.name_scope("foo/"):  # Should not raise
+      with g.name_scope("_bar"):  # Should not raise
+        pass
+    with self.assertRaises(ValueError):
+      with g.name_scope("foo:0"):
+        pass
+    with self.assertRaises(ValueError):
+      with g.name_scope("_bar"):
+        pass
 
 
 class NameTest(test_util.TensorFlowTestCase):
@@ -1080,20 +1105,20 @@ class OpScopeTest(test_util.TensorFlowTestCase):
         g0.create_op("a", [], [dtypes.float32]),
         g0.create_op("b", [], [dtypes.float32])]
     with self.assertRaises(ValueError):
-      with ops.op_scope(values, None):
+      with ops.name_scope(None, values=values):
         pass
     with self.assertRaises(ValueError):
-      with ops.op_scope(values, None, None):
+      with ops.name_scope(None, None, values):
         pass
 
   def testEmptyScopeName(self):
     g0 = ops.Graph()
     a = g0.create_op("a", [], [dtypes.float32])
     b = g0.create_op("b", [], [dtypes.float32])
-    with ops.op_scope([a, b], "") as scope:
+    with ops.name_scope("", values=[a, b]) as scope:
       self.assertEqual("", scope)
       self.assertEqual(g0, ops.get_default_graph())
-    with ops.op_scope([a, b], "", "my_default_scope") as scope:
+    with ops.name_scope("", "my_default_scope", [a, b]) as scope:
       self.assertEqual("", scope)
       self.assertEqual(g0, ops.get_default_graph())
 
@@ -1103,22 +1128,22 @@ class OpScopeTest(test_util.TensorFlowTestCase):
     b = g0.create_op("b", [], [dtypes.float32])
     scope_name = "my_scope"
     default_scope_name = "my_default_scope"
-    with ops.op_scope([a, b], scope_name, default_scope_name) as scope:
+    with ops.name_scope(scope_name, default_scope_name, [a, b]) as scope:
       self.assertEqual("%s/" % scope_name, scope)
       self.assertEqual(g0, ops.get_default_graph())
-    with ops.op_scope([a, b], None, default_scope_name) as scope:
+    with ops.name_scope(None, default_scope_name, [a, b]) as scope:
       self.assertEqual("%s/" % default_scope_name, scope)
       self.assertEqual(g0, ops.get_default_graph())
 
   def _testGraphElements(self, graph_elements):
     scope_name = "my_scope"
-    with ops.op_scope(graph_elements, scope_name) as scope:
+    with ops.name_scope(scope_name, values=graph_elements) as scope:
       self.assertEqual("%s/" % scope_name, scope)
       self.assertEqual(graph_elements[0].graph, ops.get_default_graph())
     g1 = ops.Graph()
     c = g1.create_op("c", [], [dtypes.float32])
     with self.assertRaises(ValueError):
-      with ops.op_scope(graph_elements + [c], scope_name):
+      with ops.name_scope(scope_name, values=graph_elements + [c]):
         pass
 
   def testTensor(self):

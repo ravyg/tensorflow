@@ -1,4 +1,4 @@
-/* Copyright 2016 Google Inc. All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@ limitations under the License.
 
 #include <cstring>
 
+#include "tensorflow/c/tf_status_helper.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/graph/equal_graph_def.h"
 #include "tensorflow/core/lib/core/coding.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/util/tf_status_helper.h"
 
 namespace tensorflow {
 
@@ -212,28 +212,38 @@ Status PyBytesArrayMap(PyArrayObject* array, F f) {
     auto item = tensorflow::make_safe(PyArray_GETITEM(
         array, static_cast<char*>(PyArray_ITER_DATA(iter.get()))));
     if (!item.get()) {
-      return errors::Internal("Unable to get element from the feed.");
+      return errors::Internal("Unable to get element from the feed - no item.");
     }
     char* ptr;
     Py_ssize_t len;
 
-#if PY_VERSION_HEX >= 0x03030000
-    // Accept unicode in Python 3, by converting to UTF-8 bytes.
     if (PyUnicode_Check(item.get())) {
+#if PY_VERSION_HEX >= 0x03030000
+      // Accept unicode by converting to UTF-8 bytes.
       ptr = PyUnicode_AsUTF8AndSize(item.get(), &len);
       if (!ptr) {
-        return errors::Internal("Unable to get element from the feed.");
+        return errors::Internal(
+            "Unable to get element from the feed as UTF-8.");
       }
-    } else {
+      f(ptr, len);
+#else
+      PyObject* utemp = PyUnicode_AsUTF8String(item.get());
+      if (!utemp || PyBytes_AsStringAndSize(utemp, &ptr, &len) == -1) {
+        Py_XDECREF(utemp);
+        return errors::Internal(
+            "Unable to convert element from the feed to UTF-8.");
+      }
+      f(ptr, len);
+      Py_DECREF(utemp);
 #endif
+    } else {
       int success = PyBytes_AsStringAndSize(item.get(), &ptr, &len);
       if (success != 0) {
-        return errors::Internal("Unable to get element from the feed.");
+        return errors::Internal(
+            "Unable to get element from the feed as bytes.");
       }
-#if PY_VERSION_HEX >= 0x03030000
+      f(ptr, len);
     }
-#endif
-    f(ptr, len);
     PyArray_ITER_NEXT(iter.get());
   }
   return Status::OK();
@@ -416,7 +426,7 @@ void TF_Run_wrapper_helper(TF_Session* session, const char* handle,
     }
 
     tensorflow::int64 nelems = 1;
-    gtl::InlinedVector<tensorflow::int64, 4> dims;
+    gtl::InlinedVector<int64_t, 4> dims;
     for (int i = 0; i < PyArray_NDIM(array); ++i) {
       dims.push_back(PyArray_SHAPE(array)[i]);
       nelems *= dims[i];
@@ -432,29 +442,10 @@ void TF_Run_wrapper_helper(TF_Session* session, const char* handle,
       // having to acquire the Python Global Interpreter Lock).
       // TODO(mrry): Investigate in what cases we can safely acquire
       size_t size = PyArray_NBYTES(array);
-      // NOTE(mrry): 32 is the upper bound on current alignment
-      // requirements for tensorflow::Tensor. We hard code this here to
-      // avoid taking a dependency on Eigen in the client code.
-      void* data = tensorflow::cpu_allocator()->AllocateRaw(32, size);
-      if (tensorflow::LogMemory::IsEnabled()) {
-        LogMemory::RecordRawAllocation(
-            "Python session helper",
-            tensorflow::LogMemory::EXTERNAL_TENSOR_ALLOCATION_STEP_ID, size,
-            data, tensorflow::cpu_allocator());
-      }
-      std::memcpy(data, PyArray_DATA(array), size);
-      inputs_safe.emplace_back(make_safe(TF_NewTensor(
-          dtype, dims.data(), dims.size(), data, size,
-          [](void* data, size_t len, void* arg) {
-            if (tensorflow::LogMemory::IsEnabled()) {
-              LogMemory::RecordRawDeallocation(
-                  "Python session helper",
-                  tensorflow::LogMemory::EXTERNAL_TENSOR_ALLOCATION_STEP_ID,
-                  data, tensorflow::cpu_allocator(), false);
-            }
-            tensorflow::cpu_allocator()->DeallocateRaw(data);
-          },
-          nullptr)));
+      TF_Tensor* tensor =
+          TF_AllocateTensor(dtype, dims.data(), dims.size(), size);
+      std::memcpy(TF_TensorData(tensor), PyArray_DATA(array), size);
+      inputs_safe.emplace_back(make_safe(tensor));
       // The destruction of the numpy array will now be handled by the
       // inputs_safe destructor.
       py_inputs_safe[i].reset();
@@ -553,7 +544,7 @@ void TF_Run_wrapper(TF_Session* session, const TF_Buffer* run_options,
 void TF_PRunSetup_wrapper(TF_Session* session, const NameVector& input_names,
                           const NameVector& output_names,
                           const NameVector& target_nodes, TF_Status* out_status,
-                          char** out_handle) {
+                          const char** out_handle) {
   Py_BEGIN_ALLOW_THREADS;
   TF_PRunSetup(
       session, const_cast<const char**>(input_names.data()), input_names.size(),
@@ -571,6 +562,13 @@ void TF_PRun_wrapper(TF_Session* session, const char* handle,
                      TF_Status* out_status, PyObjectVector* out_values) {
   TF_Run_wrapper_helper(session, handle, nullptr, inputs, output_names,
                         NameVector(), out_status, out_values, nullptr);
+}
+
+// Wrapper for TF_Reset that converts the string vectors to character arrays.
+void TF_Reset_wrapper(const TF_SessionOptions* opt,
+                      const NameVector& containers, TF_Status* out_status) {
+  TF_Reset(opt, const_cast<const char**>(containers.data()), containers.size(),
+           out_status);
 }
 
 string EqualGraphDefWrapper(const string& actual, const string& expected) {

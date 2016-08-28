@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,10 +23,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.contrib.metrics.python.ops import metric_ops_util
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import constant_op
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import histogram_ops
 from tensorflow.python.ops import logging_ops
@@ -76,8 +77,10 @@ def auc_using_histogram(boolean_labels,
   """
   if collections is None:
     collections = [ops.GraphKeys.LOCAL_VARIABLES]
-  with variable_scope.variable_op_scope(
-      [boolean_labels, scores, score_range], name, 'auc_using_histogram'):
+  with variable_scope.variable_scope(
+      name, 'auc_using_histogram', [boolean_labels, scores, score_range]):
+    scores, boolean_labels = metric_ops_util.remove_squeezable_dimensions(
+        scores, boolean_labels)
     score_range = ops.convert_to_tensor(score_range, name='score_range')
     boolean_labels, scores = _check_labels_and_scores(
         boolean_labels, scores, check_shape)
@@ -93,7 +96,8 @@ def auc_using_histogram(boolean_labels,
 
 def _check_labels_and_scores(boolean_labels, scores, check_shape):
   """Check the rank of labels/scores, return tensor versions."""
-  with ops.op_scope([boolean_labels, scores], '_check_labels_and_scores'):
+  with ops.name_scope('_check_labels_and_scores',
+                      values=[boolean_labels, scores]):
     boolean_labels = ops.convert_to_tensor(boolean_labels,
                                            name='boolean_labels')
     scores = ops.convert_to_tensor(scores, name='scores')
@@ -123,8 +127,8 @@ def _check_labels_and_scores(boolean_labels, scores, check_shape):
 def _make_auc_histograms(boolean_labels, scores, score_range, nbins):
   """Create histogram tensors from one batch of labels/scores."""
 
-  with variable_scope.variable_op_scope(
-      [boolean_labels, scores, nbins], None, 'make_auc_histograms'):
+  with variable_scope.variable_scope(
+      None, 'make_auc_histograms', [boolean_labels, scores, nbins]):
     # Histogram of scores for records in this batch with True label.
     hist_true = histogram_ops.histogram_fixed_width(
         array_ops.boolean_mask(scores, boolean_labels),
@@ -144,8 +148,8 @@ def _make_auc_histograms(boolean_labels, scores, score_range, nbins):
 
 def _auc_hist_accumulate(hist_true, hist_false, nbins, collections):
   """Accumulate histograms in new variables."""
-  with variable_scope.variable_op_scope(
-      [hist_true, hist_false], None, 'hist_accumulate'):
+  with variable_scope.variable_scope(
+      None, 'hist_accumulate', [hist_true, hist_false]):
     # Holds running total histogram of scores for records labeled True.
     hist_true_acc = variable_scope.get_variable(
         'hist_true_acc',
@@ -219,7 +223,7 @@ def _auc_convert_hist_to_auc(hist_true_acc, hist_false_acc, nbins):
 def _strict_1d_cumsum(tensor, len_tensor):
   """Cumsum of a 1D tensor with defined shape by padding and convolving."""
   # Assumes tensor shape is fully defined.
-  with ops.op_scope([tensor], 'strict_1d_cumsum'):
+  with ops.name_scope('strict_1d_cumsum', values=[tensor]):
     if len_tensor == 0:
       return constant_op.constant([])
     len_pad = len_tensor - 1
@@ -232,7 +236,7 @@ def _strict_1d_cumsum(tensor, len_tensor):
 # See:  https://github.com/tensorflow/tensorflow/issues/813
 def _strict_conv1d(x, h):
   """Return x * h for rank 1 tensors x and h."""
-  with ops.op_scope([x, h], 'strict_conv1d'):
+  with ops.name_scope('strict_conv1d', values=[x, h]):
     x = array_ops.reshape(x, (1, -1, 1, 1))
     h = array_ops.reshape(h, (-1, 1, 1, 1))
     result = nn_ops.conv2d(x, h, [1, 1, 1, 1], 'SAME')

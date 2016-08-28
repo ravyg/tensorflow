@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 from tensorflow.core.framework import graph_pb2
+from tensorflow.core.framework import node_def_pb2
 from tensorflow.python.framework import ops
 from tensorflow.python.framework.test_util import TensorFlowTestCase
 from tensorflow.python.ops import control_flow_ops
@@ -31,7 +32,7 @@ from tensorflow.python.training import momentum
 class GroupTestCase(TensorFlowTestCase):
 
   def _StripNode(self, nd):
-    snode = graph_pb2.NodeDef(name=nd.name, op=nd.op, input=nd.input)
+    snode = node_def_pb2.NodeDef(name=nd.name, op=nd.op, input=nd.input)
     if nd.device:
       snode.device = nd.device
     return snode
@@ -128,7 +129,7 @@ class SwitchTestCase(TensorFlowTestCase):
         embedding = embedding_ops.embedding_lookup(embedding_matrix + 0.0, [0])
         cost += tf.reduce_sum(embedding)
         return it + 1, cost
-      _, cost = control_flow_ops.While(
+      _, cost = control_flow_ops.while_loop(
           Cond, Body, [tf.constant(0), tf.constant(0.0)])
       optimizer = momentum.MomentumOptimizer(0.1, 0.9)
       train_op = optimizer.minimize(cost)
@@ -151,7 +152,7 @@ class SwitchTestCase(TensorFlowTestCase):
                        lambda: tf.square(cost),
                        lambda: cost + tf.reduce_sum(embedding))
         return it + 1, cost
-      _, cost = control_flow_ops.While(
+      _, cost = control_flow_ops.while_loop(
           Cond, Body, [tf.constant(0), tf.constant(0.0)])
 
       dynamic_grads = tf.gradients(cost, [embedding_matrix])[0]
@@ -169,6 +170,57 @@ class SwitchTestCase(TensorFlowTestCase):
       with self.test_session() as sess:
         sess.run(tf.initialize_all_variables())
         self.assertAllEqual(*sess.run([static_grads, dynamic_grads]))
+
+  def testIndexedSlicesWithShapeGradientInWhileLoop(self):
+    with self.test_session() as sess:
+      num_steps = 9
+
+      inputs = tf.placeholder(dtype="float32", shape=[num_steps])
+      initial_outputs = tf.TensorArray(dtype="float32", size=num_steps)
+      initial_i = tf.constant(0, dtype="int32")
+
+      def Cond(i, _):
+        return i < num_steps
+
+      def Body(i, outputs):
+        x = tf.gather(inputs, i)
+        outputs = outputs.write(i, x)
+        return i + 1, outputs
+
+      _, outputs = tf.while_loop(Cond, Body, [initial_i, initial_outputs])
+
+      outputs = tf.reduce_sum(outputs.pack())
+      r = tf.gradients([outputs], [inputs])[0]
+      grad_wr_inputs = ops.convert_to_tensor(r)
+      o, grad = sess.run([outputs, grad_wr_inputs],
+                         feed_dict={inputs: [4, 6, 0, 7, 0, 0, 1, 2, 0]})
+      self.assertEquals(o, 20)
+      self.assertAllEqual(grad, [1] * num_steps)
+
+  def testIndexedSlicesWithDynamicShapeGradientInWhileLoop(self):
+    with self.test_session() as sess:
+      inputs = tf.placeholder(dtype="float32")
+      initial_outputs = tf.TensorArray(dtype="float32", dynamic_size=True,
+                                       size=1)
+      initial_i = tf.constant(0, dtype="int32")
+
+      def Cond(i, _):
+        return i < tf.size(inputs)
+
+      def Body(i, outputs):
+        x = tf.gather(inputs, i)
+        outputs = outputs.write(i, x)
+        return i + 1, outputs
+
+      _, outputs = tf.while_loop(Cond, Body, [initial_i, initial_outputs])
+
+      outputs = tf.reduce_sum(outputs.pack())
+      r = tf.gradients([outputs], [inputs])[0]
+      grad_wr_inputs = ops.convert_to_tensor(r)
+      o, grad = sess.run([outputs, grad_wr_inputs],
+                         feed_dict={inputs: [1, 3, 2]})
+      self.assertEquals(o, 6)
+      self.assertAllEqual(grad, [1] * 3)
 
 
 if __name__ == "__main__":

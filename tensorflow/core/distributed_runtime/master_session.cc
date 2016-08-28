@@ -1,4 +1,4 @@
-/* Copyright 2016 Google Inc. All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -187,9 +187,10 @@ class MasterSession : public MasterSessionInterface {
 class MasterSession::ReffedClientGraph : public core::RefCounted {
  public:
   ReffedClientGraph(const string& handle, const BuildGraphOptions& bopts,
-                    SimpleClientGraph* cg, const GraphOptions& graph_opts)
+                    std::unique_ptr<SimpleClientGraph> cg,
+                    const GraphOptions& graph_opts)
       : session_handle_(handle),
-        client_graph_(cg),
+        client_graph_(std::move(cg)),
         bopts_(bopts),
         graph_opts_(graph_opts) {
     VLOG(1) << "Created ReffedClientGraph for node with "
@@ -203,12 +204,9 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
     // timelines, the pruned graph, statistics, etc.).
   }
 
-  ~ReffedClientGraph() override {
-    delete client_graph_;
-    DeregisterPartitions();
-  }
+  ~ReffedClientGraph() override { DeregisterPartitions(); }
 
-  const SimpleClientGraph* client_graph() { return client_graph_; }
+  const SimpleClientGraph* client_graph() { return client_graph_.get(); }
 
   // Local execution methods.
 
@@ -225,15 +223,15 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
                        const RunStepRequest& req, RunStepResponse* resp,
                        CancellationManager* cm);
 
-  // Calls workers to cleanup states for the step "step_id".  Waits
-  // till all cleanup rpcs complete.
-  Status CleanupPartitions(int64 step_id);
+  // Calls workers to cleanup states for the step "step_id".  Calls
+  // `done` when all cleanup RPCs have completed.
+  void CleanupPartitionsAsync(int64 step_id, StatusCallback done);
 
   // TODO(mrry): Runtime statistics collection.
 
  private:
   const string session_handle_;
-  SimpleClientGraph* const client_graph_ = nullptr;
+  const std::unique_ptr<SimpleClientGraph> client_graph_;
   std::unordered_set<const Node*> nodes_needing_input_mapping_;
   BuildGraphOptions bopts_;
   const GraphOptions graph_opts_;
@@ -569,11 +567,15 @@ Status MasterSession::ReffedClientGraph::RunPartitions(
   bool success =
       cm->RegisterCallback(token, [&calls]() { calls.StartCancel(); });
   if (!success) {
-    return errors::Cancelled("Step was cancelled");
+    calls.StartCancel();
   }
   calls.Wait();
-  cm->DeregisterCallback(token);
   call_opts->ClearCancelCallback();
+  if (success) {
+    cm->DeregisterCallback(token);
+  } else {
+    return errors::Cancelled("Step was cancelled");
+  }
 
   // Collects fetches.
   Status status = calls.status();
@@ -603,31 +605,72 @@ Status MasterSession::ReffedClientGraph::RunPartitions(
   return status;
 }
 
-Status MasterSession::ReffedClientGraph::CleanupPartitions(int64 step_id) {
-  struct Call {
-    CleanupGraphRequest req;
-    CleanupGraphResponse resp;
-    Notification done;
-    Status status;
-  };
+namespace {
+
+class CleanupBroadcastHelper {
+ public:
+  CleanupBroadcastHelper(int64 step_id, int num_calls, StatusCallback done)
+      : resps_(num_calls), num_pending_(num_calls), done_(std::move(done)) {
+    req_.set_step_id(step_id);
+  }
+
+  // Returns a non-owned pointer to a request buffer for all calls.
+  CleanupGraphRequest* request() { return &req_; }
+
+  // Returns a non-owned pointer to a response buffer for the ith call.
+  CleanupGraphResponse* response(int i) { return &resps_[i]; }
+
+  // Called when the ith response is received.
+  void call_done(int i, const Status& s) {
+    bool run_callback = false;
+    Status status_copy;
+    {
+      mutex_lock l(mu_);
+      status_.Update(s);
+      if (--num_pending_ == 0) {
+        run_callback = true;
+        status_copy = status_;
+      }
+    }
+    if (run_callback) {
+      done_(status_copy);
+      // This is the last call, so delete the helper object.
+      delete this;
+    }
+  }
+
+ private:
+  // A single request shared between all workers.
+  CleanupGraphRequest req_;
+  // One response buffer for each worker.
+  gtl::InlinedVector<CleanupGraphResponse, 4> resps_;
+
+  mutex mu_;
+  // Number of requests remaining to be collected.
+  int num_pending_ GUARDED_BY(mu_);
+  // Aggregate status of the operation.
+  Status status_ GUARDED_BY(mu_);
+  // Callback to be called when all operations complete.
+  StatusCallback done_;
+
+  TF_DISALLOW_COPY_AND_ASSIGN(CleanupBroadcastHelper);
+};
+
+}  // namespace
+
+
+void MasterSession::ReffedClientGraph::CleanupPartitionsAsync(
+    int64 step_id, StatusCallback done) {
   const int num = partitions_.size();
-  gtl::InlinedVector<Call, 4> calls(num);
+  // Helper object will be deleted when the final call completes.
+  CleanupBroadcastHelper* helper =
+      new CleanupBroadcastHelper(step_id, num, std::move(done));
   for (int i = 0; i < num; ++i) {
     const Part& part = partitions_[i];
-    Call* c = &calls[i];
-    c->req.set_step_id(step_id);
-    part.worker->CleanupGraphAsync(&c->req, &c->resp, [c](const Status& s) {
-      c->status = s;
-      c->done.Notify();
-    });
+    part.worker->CleanupGraphAsync(
+        helper->request(), helper->response(i),
+        [helper, i](const Status& s) { helper->call_done(i, s); });
   }
-  Status s;
-  for (int i = num - 1; i >= 0; --i) {
-    Call* c = &calls[i];
-    c->done.WaitForNotification();
-    s.Update(c->status);
-  }
-  return s;
 }
 
 // Makes async calls to workers without waiting deregistering subgraphs.
@@ -742,16 +785,23 @@ void MasterSession::UpdateLastAccessTime() {
 }
 
 Status MasterSession::Create(GraphDef* graph_def) {
+  if (session_opts_.config.graph_options().place_pruned_graph()) {
+    // TODO(b/29900832): Fix this or remove the option.
+    return errors::Unimplemented(
+        "MasterSession does not support the place_pruned_graph option.");
+  }
+
   // Keeps a copy of graph_def->library() and flib_def_ serves the
   // OpRegistryInterface used by the SimpleGraphExecutionState to construct the
   // pre-partitioned graphs during DoRunWithLocalExecution().
   func_def_lib_.Swap(graph_def->mutable_library());
-  flib_def_ = new FunctionLibraryDefinition(func_def_lib_);
+  flib_def_ =
+      new FunctionLibraryDefinition(OpRegistry::Global(), func_def_lib_);
 
   SimpleGraphExecutionStateOptions options;
   options.device_set = &devices_;
   options.session_options = &session_opts_;
-  execution_state_.reset(new SimpleGraphExecutionState(flib_def_, options));
+  execution_state_.reset(new SimpleGraphExecutionState(func_def_lib_, options));
   TF_RETURN_IF_ERROR(execution_state_->Create(graph_def));
 
   return Status::OK();
@@ -760,7 +810,7 @@ Status MasterSession::Create(GraphDef* graph_def) {
 Status MasterSession::Extend(const ExtendSessionRequest* req,
                              ExtendSessionResponse* resp) {
   UpdateLastAccessTime();
-  std::unique_ptr<SimpleGraphExecutionState> old_execution_state;
+  std::unique_ptr<SimpleGraphExecutionState> extended_execution_state;
   {
     mutex_lock l(mu_);
     // TODO(mrry): Redesign the locking with reader/writer locks to prevent
@@ -779,20 +829,16 @@ Status MasterSession::Extend(const ExtendSessionRequest* req,
     }
 
     CHECK(execution_state_);
-    SimpleGraphExecutionState* extended_execution_state = nullptr;
-    Status s =
-        execution_state_->Extend(req->graph_def(), &extended_execution_state);
-    if (s.ok()) {
-      CHECK(extended_execution_state);
-      old_execution_state =
-          std::move(execution_state_);  // Will be released outside the lock
-      execution_state_.reset(extended_execution_state);
-      ++graph_version_;
-      resp->set_new_graph_version(graph_version_);
-    }
+    TF_RETURN_IF_ERROR(
+        execution_state_->Extend(req->graph_def(), &extended_execution_state));
 
-    return s;
+    CHECK(extended_execution_state);
+    // The old execution state will be released outside the lock.
+    execution_state_.swap(extended_execution_state);
+    ++graph_version_;
+    resp->set_new_graph_version(graph_version_);
   }
+  return Status::OK();
 }
 
 Status MasterSession::StartStep(const RunStepRequest& req,
@@ -813,10 +859,11 @@ Status MasterSession::StartStep(const RunStepRequest& req,
       // cache it.
       VLOG(1) << "Unseen hash " << hash << " for "
               << BuildGraphOptionsString(*opts);
-      SimpleClientGraph* client_graph = nullptr;
+      std::unique_ptr<SimpleClientGraph> client_graph;
       TF_RETURN_IF_ERROR(execution_state_->BuildGraph(*opts, &client_graph));
-      auto entry = new ReffedClientGraph(handle_, *opts, client_graph,
-                                         session_opts_.config.graph_options());
+      auto entry =
+          new ReffedClientGraph(handle_, *opts, std::move(client_graph),
+                                session_opts_.config.graph_options());
       iter = runs_.insert({hash, entry}).first;
       auto obs_iter = obsolete_.find(hash);
       if (obs_iter != obsolete_.end()) {
@@ -912,19 +959,12 @@ Status MasterSession::DoRunWithLocalExecution(CallOptions* opts,
 
   pss.end_micros = Env::Default()->NowMicros();
 
-  // Schedule post-processing and cleanup to be done async.
-  rcg->Ref();
-  // TODO(tucker): We're doing the stats processing prior to returning
-  // the response to the client.  Ensure it's safe to do so, then schedule
-  // in a closure.
-  SchedClosure([this, rcg, step_id]() {
-    Status s = rcg->CleanupPartitions(step_id);
+  // Schedule post-processing and cleanup to be done asynchronously.
+  rcg->CleanupPartitionsAsync(step_id, [](const Status& s) {
     if (!s.ok()) {
       LOG(ERROR) << "Cleanup partition error: " << s;
     }
-    rcg->Unref();
   });
-
   return Status::OK();
 }
 

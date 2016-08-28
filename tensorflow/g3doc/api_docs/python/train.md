@@ -204,7 +204,7 @@ applies gradients.
 
 ### Gating Gradients
 
-Both `minimize()` and `compute_gradients()` accept a `gate_gradient` argument
+Both `minimize()` and `compute_gradients()` accept a `gate_gradients` argument
 that controls the degree of parallelism during the application of the
 gradients.
 
@@ -274,6 +274,15 @@ Use `get_slot_names()` to get the list of slot names created by the
 
 
 
+#### Other Methods
+- - -
+
+#### `tf.train.Optimizer.get_name()` {#Optimizer.get_name}
+
+
+
+
+
 
 - - -
 
@@ -302,7 +311,7 @@ Construct a new gradient descent optimizer.
 
 ### `class tf.train.AdadeltaOptimizer` {#AdadeltaOptimizer}
 
-Optimizer that implements the Adadelta algorithm. 
+Optimizer that implements the Adadelta algorithm.
 
 See [M. D. Zeiler](http://arxiv.org/abs/1212.5701)
 ([pdf](http://arxiv.org/pdf/1212.5701v1.pdf))
@@ -359,13 +368,59 @@ Construct a new Adagrad optimizer.
 
 - - -
 
+### `class tf.train.AdagradDAOptimizer` {#AdagradDAOptimizer}
+
+Adagrad Dual Averaging algorithm for sparse linear models.
+
+See this [paper](http://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf).
+
+This optimizer takes care of regularization of unseen features in a mini batch
+by updating them when they are seen with a closed form update rule that is
+equivalent to having updated them on every mini-batch.
+
+AdagradDA is typically used when there is a need for large sparsity in the
+trained model. This optimizer only guarantees sparsity for linear models. Be
+careful when using AdagradDA for deep networks as it will require careful
+initialization of the gradient accumulators for it to train.
+
+- - -
+
+#### `tf.train.AdagradDAOptimizer.__init__(learning_rate, global_step, initial_gradient_squared_accumulator_value=0.1, l1_regularization_strength=0.0, l2_regularization_strength=0.0, use_locking=False, name='AdagradDA')` {#AdagradDAOptimizer.__init__}
+
+Construct a new AdagradDA optimizer.
+
+##### Args:
+
+
+*  <b>`learning_rate`</b>: A `Tensor` or a floating point value.  The learning rate.
+*  <b>`global_step`</b>: A `Tensor` containing the current training step number.
+*  <b>`initial_gradient_squared_accumulator_value`</b>: A floating point value.
+    Starting value for the accumulators, must be positive.
+*  <b>`l1_regularization_strength`</b>: A float value, must be greater than or
+    equal to zero.
+*  <b>`l2_regularization_strength`</b>: A float value, must be greater than or
+    equal to zero.
+*  <b>`use_locking`</b>: If `True` use locks for update operations.
+*  <b>`name`</b>: Optional name prefix for the operations created when applying
+    gradients.  Defaults to "AdagradDA".
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: If the `initial_gradient_squared_accumulator_value` is
+  invalid.
+
+
+
+- - -
+
 ### `class tf.train.MomentumOptimizer` {#MomentumOptimizer}
 
 Optimizer that implements the Momentum algorithm.
 
 - - -
 
-#### `tf.train.MomentumOptimizer.__init__(learning_rate, momentum, use_locking=False, name='Momentum')` {#MomentumOptimizer.__init__}
+#### `tf.train.MomentumOptimizer.__init__(learning_rate, momentum, use_locking=False, name='Momentum', use_nesterov=False)` {#MomentumOptimizer.__init__}
 
 Construct a new Momentum optimizer.
 
@@ -418,6 +473,10 @@ variable <- variable - lr_t * m_t / (sqrt(v_t) + epsilon)
 The default value of 1e-8 for epsilon might not be a good default in
 general. For example, when training an Inception network on ImageNet a
 current good choice is 1.0 or 0.1.
+
+Note that in dense implement of this algorithm, m_t, v_t and variable will
+update even if g is zero, but in sparse implement, m_t, v_t and variable
+will not update in iterations g is zero.
 
 ##### Args:
 
@@ -485,6 +544,10 @@ See the [paper]
 #### `tf.train.RMSPropOptimizer.__init__(learning_rate, decay=0.9, momentum=0.0, epsilon=1e-10, use_locking=False, name='RMSProp')` {#RMSPropOptimizer.__init__}
 
 Construct a new RMSProp optimizer.
+
+Note that in dense implement of this algorithm, m_t and v_t will
+update even if g is zero, but in sparse implement, m_t and v_t
+will not update in iterations g is zero.
 
 ##### Args:
 
@@ -647,20 +710,25 @@ greater than `clip_value_max` are set to `clip_value_max`.
 
 - - -
 
-### `tf.clip_by_norm(t, clip_norm, name=None)` {#clip_by_norm}
+### `tf.clip_by_norm(t, clip_norm, axes=None, name=None)` {#clip_by_norm}
 
 Clips tensor values to a maximum L2-norm.
 
 Given a tensor `t`, and a maximum clip value `clip_norm`, this operation
-normalizes `t` so that its L2-norm is less than or equal to `clip_norm`.
-Specifically, if the L2-norm is already less than or equal to `clip_norm`,
-then `t` is not modified. If the L2-norm is greater than `clip_norm`, then
-this operation returns a tensor of the same type and shape as `t` with its
-values set to:
+normalizes `t` so that its L2-norm is less than or equal to `clip_norm`,
+along the dimensions given in `axes`. Specifically, in the default case
+where all dimensions are used for calculation, if the L2-norm of `t` is
+already less than or equal to `clip_norm`, then `t` is not modified. If
+the L2-norm is greater than `clip_norm`, then this operation returns a
+tensor of the same type and shape as `t` with its values set to:
 
 `t * clip_norm / l2norm(t)`
 
 In this case, the L2-norm of the output tensor is `clip_norm`.
+
+As another example, if `t` is a matrix and `axes == [1]`, then each row
+of the output will have L2-norm equal to `clip_norm`. If `axes == [0]`
+instead, each column of the output will be clipped.
 
 This operation is typically used to clip gradients before applying them with
 an optimizer.
@@ -670,6 +738,9 @@ an optimizer.
 
 *  <b>`t`</b>: A `Tensor`.
 *  <b>`clip_norm`</b>: A 0-D (scalar) `Tensor` > 0. A maximum clipping value.
+*  <b>`axes`</b>: A 1-D (vector) `Tensor` of type int32 containing the dimensions
+    to use for computing the L2-norm. If `None` (the default), uses all
+    dimensions.
 *  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
@@ -813,7 +884,7 @@ decayed_learning_rate = learning_rate *
                         decay_rate ^ (global_step / decay_steps)
 ```
 
-If the argument `staircase` is `True`, then `global_step /decay_steps` is an
+If the argument `staircase` is `True`, then `global_step / decay_steps` is an
 integer division and the decayed learning rate follows a staircase function.
 
 Example: decay every 100000 steps with a base of 0.96:
@@ -826,7 +897,7 @@ learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step,
                                            100000, 0.96, staircase=True)
 # Passing global_step to minimize() will increment it at each step.
 learning_step = (
-    tf.GradientDescentOptimizer(learning_rate)
+    tf.train.GradientDescentOptimizer(learning_rate)
     .minimize(...my loss..., global_step=global_step)
 )
 ```
@@ -842,8 +913,9 @@ learning_step = (
     Must be positive.  See the decay computation above.
 *  <b>`decay_rate`</b>: A scalar `float32` or `float64` `Tensor` or a
     Python number.  The decay rate.
-*  <b>`staircase`</b>: Boolean.  It `True` decay the learning rate at discrete intervals.
-*  <b>`name`</b>: String.  Optional name of the operation.  Defaults to 'ExponentialDecay'
+*  <b>`staircase`</b>: Boolean.  It `True` decay the learning rate at discrete intervals
+*  <b>`name`</b>: String.  Optional name of the operation.  Defaults to
+    'ExponentialDecay'
 
 ##### Returns:
 
@@ -993,7 +1065,7 @@ variables.
 
 
 *  <b>`var_list`</b>: A list of Variable or Tensor objects. The variables
-    and Tensors must be of types float32 or float64.
+    and Tensors must be of types float16, float32, or float64.
 
 ##### Returns:
 
@@ -1002,7 +1074,7 @@ variables.
 ##### Raises:
 
 
-*  <b>`TypeError`</b>: If the arguments are not all float32 or float64.
+*  <b>`TypeError`</b>: If the arguments are not all float16, float32, or float64.
 *  <b>`ValueError`</b>: If the moving average of one of the variables is already
     being computed.
 
@@ -1198,9 +1270,20 @@ except Exception:
 ```
 - - -
 
-#### `tf.train.Coordinator.__init__()` {#Coordinator.__init__}
+#### `tf.train.Coordinator.__init__(clean_stop_exception_types=None)` {#Coordinator.__init__}
 
 Create a new Coordinator.
+
+##### Args:
+
+
+*  <b>`clean_stop_exception_types`</b>: Optional tuple of Exception types that should
+    cause a clean stop of the coordinator. If an exception of one of these
+    types is reported to `request_stop(ex)` the coordinator will behave as
+    if `request_stop(None)` was called.  Defaults to
+    `(tf.errors.OutOfRangeError,)` which is used by input queues to signal
+    the end of input. When feeding training data from a Python iterator it
+    is common to add `StopIteration` to this list.
 
 
 - - -
@@ -1214,11 +1297,14 @@ After this is called, calls to `should_stop()` will return `False`.
 
 - - -
 
-#### `tf.train.Coordinator.join(threads, stop_grace_period_secs=120)` {#Coordinator.join}
+#### `tf.train.Coordinator.join(threads=None, stop_grace_period_secs=120)` {#Coordinator.join}
 
 Wait for threads to terminate.
 
-Blocks until all `threads` have terminated or `request_stop()` is called.
+This call blocks until a set of threads have terminated.  The set of thread
+is the union of the threads passed in the `threads` argument and the list
+of threads that registered with the coordinator by calling
+`Coordinator.register_thread()`.
 
 After the threads stop, if an `exc_info` was passed to `request_stop`, that
 exception is re-raised.
@@ -1232,7 +1318,8 @@ that `RuntimeError`.
 ##### Args:
 
 
-*  <b>`threads`</b>: List of `threading.Threads`. The started threads to join.
+*  <b>`threads`</b>: List of `threading.Threads`. The started threads to join in
+    addition to the registered threads.
 *  <b>`stop_grace_period_secs`</b>: Number of seconds given to threads to stop after
     `request_stop()` has been called.
 
@@ -1241,6 +1328,25 @@ that `RuntimeError`.
 
 *  <b>`RuntimeError`</b>: If any thread is still alive after `request_stop()`
     is called and the grace period expires.
+
+
+- - -
+
+#### `tf.train.Coordinator.joined` {#Coordinator.joined}
+
+
+
+
+- - -
+
+#### `tf.train.Coordinator.register_thread(thread)` {#Coordinator.register_thread}
+
+Register a thread to join.
+
+##### Args:
+
+
+*  <b>`thread`</b>: A Python thread to join.
 
 
 - - -
@@ -1562,7 +1668,7 @@ communicate with any other server in the same cluster.
 
 - - -
 
-#### `tf.train.Server.__init__(server_or_cluster_def, job_name=None, task_index=None, protocol=None, start=True)` {#Server.__init__}
+#### `tf.train.Server.__init__(server_or_cluster_def, job_name=None, task_index=None, protocol=None, config=None, start=True)` {#Server.__init__}
 
 Creates a new server with the given definition.
 
@@ -1585,6 +1691,8 @@ override any information provided in `server_or_cluster_def`.
 *  <b>`protocol`</b>: (Optional.) Specifies the protocol to be used by the server.
     Acceptable values include `"grpc"`. Defaults to the value in
     `server_or_cluster_def`, if specified. Otherwise defaults to `"grpc"`.
+*  <b>`config`</b>: (Options.) A `tf.ConfigProto` that specifies default
+    configuration options for all sessions that run on this server.
 *  <b>`start`</b>: (Optional.) Boolean, indicating whether to start the server
     after creating it. Defaults to `True`.
 
@@ -1596,7 +1704,7 @@ override any information provided in `server_or_cluster_def`.
 
 - - -
 
-#### `tf.train.Server.create_local_server(start=True)` {#Server.create_local_server}
+#### `tf.train.Server.create_local_server(config=None, start=True)` {#Server.create_local_server}
 
 Creates a new single-process cluster running on the local host.
 
@@ -1608,6 +1716,8 @@ single-process cluster containing a single task in a job called
 ##### Args:
 
 
+*  <b>`config`</b>: (Options.) A `tf.ConfigProto` that specifies default
+    configuration options for all sessions that run on this server.
 *  <b>`start`</b>: (Optional.) Boolean, indicating whether to start the server after
     creating it. Defaults to `True`.
 
@@ -1635,6 +1745,18 @@ with tf.Session(server.target):
 ##### Returns:
 
   A string containing a session target for this server.
+
+
+- - -
+
+#### `tf.train.Server.server_def` {#Server.server_def}
+
+Returns the `tf.train.ServerDef` for this server.
+
+##### Returns:
+
+  A `tf.train.ServerDef` protocol buffer that describes the configuration
+  of this server.
 
 
 
@@ -1672,7 +1794,7 @@ This method currently blocks forever.
 A training helper that checkpoints models and computes summaries.
 
 The Supervisor is a small wrapper around a `Coordinator`, a `Saver`,
-and a `SessionManager` that takes care of common needs of Tensorflow
+and a `SessionManager` that takes care of common needs of TensorFlow
 training programs.
 
 #### Use for a single program
@@ -1682,7 +1804,7 @@ with tf.Graph().as_default():
   ...add operations to the graph...
   # Create a Supervisor that will checkpoint the model in '/tmp/mydir'.
   sv = Supervisor(logdir='/tmp/mydir')
-  # Get a Tensorflow session managed by the supervisor.
+  # Get a TensorFlow session managed by the supervisor.
   with sv.managed_session(FLAGS.master) as sess:
     # Use the session to train the graph.
     while not sv.should_stop():
@@ -1737,8 +1859,8 @@ with tf.Graph().as_default():
 
 In the *chief* task, the `Supervisor` works exactly as in the first example
 above.  In the other tasks `sv.managed_session()` waits for the Model to have
-been intialized before returning a session to the training code.  The
-non-chief tasks depend on the chief taks for initializing the model.
+been initialized before returning a session to the training code.  The
+non-chief tasks depend on the chief task for initializing the model.
 
 If one of the tasks crashes and restarts, `managed_session()`
 checks if the Model is initialized.  If yes, it just creates a session and
@@ -1824,7 +1946,7 @@ session and check if it could be initialized automatically.
 
 - - -
 
-#### `tf.train.Supervisor.__init__(graph=None, ready_op=0, is_chief=True, init_op=0, init_feed_dict=None, local_init_op=0, logdir=None, summary_op=0, saver=0, global_step=0, save_summaries_secs=120, save_model_secs=600, recovery_wait_secs=30, stop_grace_secs=120, checkpoint_basename='model.ckpt', session_manager=None, summary_writer=0, init_fn=None)` {#Supervisor.__init__}
+#### `tf.train.Supervisor.__init__(graph=None, ready_op=0, ready_for_local_init_op=0, is_chief=True, init_op=0, init_feed_dict=None, local_init_op=0, logdir=None, summary_op=0, saver=0, global_step=0, save_summaries_secs=120, save_model_secs=600, recovery_wait_secs=30, stop_grace_secs=120, checkpoint_basename='model.ckpt', session_manager=None, summary_writer=0, init_fn=None)` {#Supervisor.__init__}
 
 Create a `Supervisor`.
 
@@ -1840,6 +1962,13 @@ Create a `Supervisor`.
     The model is considered ready if it returns an empty array.  Defaults to
     the tensor returned from `tf.report_uninitialized_variables()`  If
     `None`, the model is not checked for readiness.
+*  <b>`ready_for_local_init_op`</b>: 1-D string `Tensor`.  This tensor is evaluated by
+    supervisors in `prepare_or_wait_for_session()` to check if the model is
+    ready to run the local_init_op.
+    The model is considered ready if it returns an empty array.  Defaults to
+    the tensor returned from
+    `tf.report_uninitialized_variables(tf.all_variables())`. If `None`, the
+    model is not checked for readiness before running local_init_op.
 *  <b>`is_chief`</b>: If True, create a chief supervisor in charge of initializing
     and restoring the model.  If False, create a supervisor that relies
     on a chief supervisor for inits and restore.
@@ -2031,7 +2160,7 @@ Start threads for `QueueRunners`.
 Note that the queue runners collected in the graph key `QUEUE_RUNNERS`
 are already started automatically when you create a session with the
 supervisor, so unless you have non-collected queue runners to start
-you do not need to call this explicitely.
+you do not need to call this explicitly.
 
 ##### Args:
 
@@ -2233,7 +2362,7 @@ Start threads for `QueueRunners`.
 Note that the queue runners collected in the graph key `QUEUE_RUNNERS`
 are already started automatically when you create a session with the
 supervisor, so unless you have non-collected queue runners to start
-you do not need to call this explicitely.
+you do not need to call this explicitly.
 
 ##### Args:
 
@@ -2428,6 +2557,13 @@ so it does not need to be passed to the `stop()` method.
 
 - - -
 
+#### `tf.train.Supervisor.ready_for_local_init_op` {#Supervisor.ready_for_local_init_op}
+
+
+
+
+- - -
+
 #### `tf.train.Supervisor.ready_op` {#Supervisor.ready_op}
 
 Return the Ready Op used by the supervisor.
@@ -2561,7 +2697,7 @@ with tf.Graph().as_default():
 `wait_for_session()` waits for a model to be initialized by other processes.
 - - -
 
-#### `tf.train.SessionManager.__init__(local_init_op=None, ready_op=None, graph=None, recovery_wait_secs=30)` {#SessionManager.__init__}
+#### `tf.train.SessionManager.__init__(local_init_op=None, ready_op=None, ready_for_local_init_op=None, graph=None, recovery_wait_secs=30)` {#SessionManager.__init__}
 
 Creates a SessionManager.
 
@@ -2572,6 +2708,12 @@ The `ready_op` is an `Operation` used to check if the model is ready.  The
 model is considered ready if that operation returns an empty string tensor.
 If the operation returns non empty string tensor, the elements are
 concatenated and used to indicate to the user why the model is not ready.
+
+The `ready_for_local_init_op` is an `Operation` used to check if the model
+is ready to run local_init_op.  The model is considered ready if that
+operation returns an empty string tensor. If the operation returns non empty
+string tensor, the elements are concatenated and used to indicate to the
+user why the model is not ready.
 
 If `ready_op` is `None`, the model is not checked for readiness.
 
@@ -2585,8 +2727,16 @@ be initialized or restored.  Defaults to 30 seconds.
 *  <b>`local_init_op`</b>: An `Operation` run immediately after session creation.
      Usually used to initialize tables and local variables.
 *  <b>`ready_op`</b>: An `Operation` to check if the model is initialized.
+*  <b>`ready_for_local_init_op`</b>: An `Operation` to check if the model is ready
+     to run local_init_op.
 *  <b>`graph`</b>: The `Graph` that the model will use.
 *  <b>`recovery_wait_secs`</b>: Seconds between checks for the model to be ready.
+
+##### Raises:
+
+
+*  <b>`ValueError`</b>: If ready_for_local_init_op is not None but local_init_op is
+    None
 
 
 - - -
@@ -2604,21 +2754,12 @@ up to `max_wait_secs`, for recovery to succeed.
 
 If the model cannot be recovered successfully then it is initialized by
 either running the provided `init_op`, or calling the provided `init_fn`.
-It is an error if the model cannot be recovered and neither an `init_op`
-or an `init_fn` are passed.
+The local_init_op is also run after init_op and init_fn, regardless of
+whether the model was recovered successfully, but only if
+ready_for_local_init_op passes.
 
-This is a convenient function for the following, with a few error checks
-added:
-
-```python
-sess, initialized = self.recover_session(master)
-if not initialized:
-  if init_op:
-    sess.run(init_op, feed_dict=init_feed_dict)
-  if init_fn;
-    init_fn(sess)
-return sess
-```
+It is an error if the model cannot be recovered and no `init_op`
+or `init_fn` or `local_init_op` are passed.
 
 ##### Args:
 
@@ -2669,7 +2810,7 @@ and can be recovered from a checkpoint, recover it.
 ##### Returns:
 
   A pair (sess, initialized) where 'initialized' is `True` if
-  the session could be recovered, `False` otherwise.
+  the session could be recovered and initialized, `False` otherwise.
 
 
 - - -
@@ -3264,6 +3405,20 @@ Call this method when you do not need the summary writer anymore.
 
 
 
+#### Other Methods
+- - -
+
+#### `tf.train.SummaryWriter.reopen()` {#SummaryWriter.reopen}
+
+Reopens the summary writer.
+
+Can be called after `close()` to add more events in the same directory.
+The events will go into a new events file.
+
+Does nothing if the summary writer was not closed.
+
+
+
 - - -
 
 ### `tf.train.summary_iterator(path)` {#summary_iterator}
@@ -3590,6 +3745,13 @@ Called when the thread stops.
 
 - - -
 
+### `tf.train.do_quantize_training_on_graphdef(input_graph, num_bits)` {#do_quantize_training_on_graphdef}
+
+
+
+
+- - -
+
 ### `tf.train.generate_checkpoint_state_proto(save_dir, model_checkpoint_path, all_model_checkpoint_paths=None)` {#generate_checkpoint_state_proto}
 
 Generates a checkpoint state proto.
@@ -3609,5 +3771,3 @@ Generates a checkpoint state proto.
   CheckpointState proto with model_checkpoint_path and
   all_model_checkpoint_paths updated to either absolute paths or
   relative paths to the current save_dir.
-
-

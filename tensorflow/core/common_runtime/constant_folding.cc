@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,7 +39,8 @@ namespace tensorflow {
 
 namespace {
 
-bool IsConstantFoldable(const Node* n,
+bool IsConstantFoldable(const FunctionLibraryDefinition* flib_def,
+                        const Node* n,
                         std::function<bool(const Node*)> consider) {
   if (n->op_def().is_stateful()) {
     return false;
@@ -61,45 +62,54 @@ bool IsConstantFoldable(const Node* n,
   if (n->IsSink()) {
     return false;
   }
+  // For now, don't try to constant-fold functions. (They may be inlined, in
+  // which case they will become subject to constant-folding again.)
+  // TODO(phawkins): support constant-folding for functions; functions may
+  // be arbitrarily expensive to execute.
+  if (flib_def && flib_def->Find(n->type_string())) {
+    return false;
+  }
   return true;
 }
 
 // Returns the constant foldable nodes in `nodes_result` in data flow order.
-void FindConstantFoldableNodes(const Graph* graph, ConstantFoldingOptions opts,
+void FindConstantFoldableNodes(const Graph* graph,
+                               const FunctionLibraryDefinition* flib_def,
+                               ConstantFoldingOptions opts,
                                std::vector<Node*>* nodes_result) {
   std::set<const Node*> node_set;
   std::vector<Node*>& nodes = *nodes_result;
   bool internal_node_inserted = false;
   // Walk the nodes in data flow order
-  ReverseDFS(*graph, nullptr,
-             [&nodes, &node_set, &internal_node_inserted, opts](Node* n) {
-               if (n->IsConstant()) {
-                 // Constants with no control inputs (except from _SOURCE node)
-                 // are definitely constant foldable.
-                 if (n->in_edges().size() == 0 ||
-                     (n->in_edges().size() == 1 &&
-                      (*n->in_edges().begin())->src()->IsSource())) {
-                   node_set.insert(n);
-                   nodes.push_back(n);
-                 }
-               } else if (IsConstantFoldable(n, opts.consider)) {
-                 // Check whether the set of this node's in_nodes is completely
-                 // included in the set of constant foldable nodes. If true,
-                 // then this node is also constant foldable.
-                 bool all_parents_constant = true;
-                 for (const Node* parent : n->in_nodes()) {
-                   if (node_set.count(parent) == 0 && !parent->IsSource()) {
-                     all_parents_constant = false;
-                     break;
-                   }
-                 }
-                 if (all_parents_constant) {
-                   node_set.insert(n);
-                   nodes.push_back(n);
-                   internal_node_inserted = true;
-                 }
-               }
-             });
+  ReverseDFS(*graph, nullptr, [&nodes, &node_set, &internal_node_inserted, opts,
+                               flib_def](Node* n) {
+    if (n->IsConstant()) {
+      // Constants with no control inputs (except from _SOURCE node)
+      // are definitely constant foldable.
+      if (n->in_edges().size() == 0 ||
+          (n->in_edges().size() == 1 &&
+           (*n->in_edges().begin())->src()->IsSource())) {
+        node_set.insert(n);
+        nodes.push_back(n);
+      }
+    } else if (IsConstantFoldable(flib_def, n, opts.consider)) {
+      // Check whether the set of this node's in_nodes is completely
+      // included in the set of constant foldable nodes. If true,
+      // then this node is also constant foldable.
+      bool all_parents_constant = true;
+      for (const Node* parent : n->in_nodes()) {
+        if (node_set.count(parent) == 0 && !parent->IsSource()) {
+          all_parents_constant = false;
+          break;
+        }
+      }
+      if (all_parents_constant) {
+        node_set.insert(n);
+        nodes.push_back(n);
+        internal_node_inserted = true;
+      }
+    }
+  });
   // If we have inserted just leaf level nodes, then there is nothing to fold.
   if (!internal_node_inserted) {
     nodes.clear();
@@ -156,22 +166,21 @@ int64 UniqueConstantId() {
   return id.fetch_add(1);
 }
 
-Device* GetCPUDevice() {
-  static Device* device = nullptr;
-  if (!device) {
-    std::vector<Device*> devices;
-    DeviceFactory::GetFactory(DEVICE_CPU)
-        ->CreateDevices(SessionOptions{}, "", &devices);
-    if (devices.size() > 0) {
-      device = devices[0];
-    }
+std::unique_ptr<Device> GetCPUDevice(Env* env) {
+  std::vector<Device*> devices;
+  SessionOptions session_options;
+  session_options.env = env;
+  Status s = DeviceFactory::GetFactory(DEVICE_CPU)
+                 ->CreateDevices(session_options, "", &devices);
+  if (s.ok() && devices.size() > 0) {
+    return std::unique_ptr<Device>(devices[0]);
   }
-  return device;
+  return nullptr;
 }
 
-thread::ThreadPool* GetThreadPool() {
+thread::ThreadPool* GetThreadPool(Env* env) {
   static thread::ThreadPool* thread_pool =
-      new thread::ThreadPool(Env::Default(), "Compute", 1);
+      new thread::ThreadPool(env, "Compute", 1);
   return thread_pool;
 }
 
@@ -182,27 +191,27 @@ class SimpleRendezvous : public Rendezvous {
  public:
   explicit SimpleRendezvous() {}
 
-  Status Send(const string& key, const Args& send_args, const Tensor& val,
+  Status Send(const ParsedKey& parsed, const Args& send_args, const Tensor& val,
               const bool is_dead) override {
     if (is_dead) {
       return errors::Internal("Send of a dead tensor");
     }
-    ParsedKey parsed;
-    TF_RETURN_IF_ERROR(ParseKey(key, &parsed));
 
     mutex_lock l(mu_);
-    if (table_.count(parsed.edge_name) > 0) {
+    string edge_name = parsed.edge_name.ToString();
+    if (table_.count(edge_name) > 0) {
       return errors::Internal("Send of an already sent tensor");
     }
-    table_[parsed.edge_name] = val;
+    table_[edge_name] = val;
     return Status::OK();
   }
 
-  void RecvAsync(const string& key, const Args& recv_args,
+  void RecvAsync(const ParsedKey& parsed, const Args& recv_args,
                  DoneCallback done) override {
     Tensor tensor;
     Status status = Status::OK();
     {
+      string key = parsed.edge_name.ToString();
       mutex_lock l(mu_);
       if (table_.count(key) <= 0) {
         status = errors::Internal("Did not find key ", key);
@@ -301,18 +310,23 @@ bool ReplaceTensorWithConstant(Graph* graph, Device* partition_device,
 }
 
 bool DoConstantFolding(const ConstantFoldingOptions& opts,
+                       FunctionLibraryRuntime* function_library, Env* env,
                        Device* partition_device, Graph* graph) {
   DumpGraph("Before", graph);
-  Device* device = GetCPUDevice();
-  thread::ThreadPool* thread_pool = GetThreadPool();
+  std::unique_ptr<Device> device = GetCPUDevice(env);
+  thread::ThreadPool* thread_pool = GetThreadPool(env);
   if (!device || !thread_pool) {
     VLOG(1) << "Cannot find a device and/or a thread pool to do constant "
                "folding on";
     return false;
   }
 
+  const FunctionLibraryDefinition* flib_def = nullptr;
+  if (function_library) {
+    flib_def = function_library->GetFunctionLibraryDefinition();
+  }
   std::vector<Node*> constant_foldable_nodes;
-  FindConstantFoldableNodes(graph, opts, &constant_foldable_nodes);
+  FindConstantFoldableNodes(graph, flib_def, opts, &constant_foldable_nodes);
   if (constant_foldable_nodes.empty()) {
     VLOG(1) << "No constant foldable nodes found";
     return false;
@@ -364,10 +378,11 @@ bool DoConstantFolding(const ConstantFoldingOptions& opts,
     thread_pool->Schedule(c);
   };
   LocalExecutorParams params;
-  params.device = device;
-  params.create_kernel = [device, constant_graph](const NodeDef& ndef,
-                                                  OpKernel** kernel) {
-    return CreateNonCachedKernel(device, nullptr, ndef,
+  params.device = device.get();
+  params.function_library = function_library;
+  params.create_kernel = [&device, constant_graph](const NodeDef& ndef,
+                                                   OpKernel** kernel) {
+    return CreateNonCachedKernel(device.get(), nullptr, ndef,
                                  constant_graph->versions().producer(), kernel);
   };
   params.delete_kernel = [](OpKernel* kernel) { delete kernel; };
@@ -387,19 +402,7 @@ bool DoConstantFolding(const ConstantFoldingOptions& opts,
   args.rendezvous = rendez;
 
   // Run the constant_graph.
-  Notification executor_done;
-  Status executor_done_status;
-  ExecutorBarrier* barrier = new ExecutorBarrier(
-      1, rendez, [&executor_done, &executor_done_status](const Status& ret) {
-        executor_done_status = ret;
-        executor_done.Notify();
-      });
-
-  executor->RunAsync(args, barrier->Get());
-
-  executor_done.WaitForNotification();
-
-  if (!executor_done_status.ok()) {
+  if (!executor->Run(args).ok()) {
     return false;
   }
 
@@ -415,7 +418,14 @@ bool DoConstantFolding(const ConstantFoldingOptions& opts,
       // this node. Don't bother processing the rest of the nodes.
       return c > 0;
     }
-    Status s = rendez->Recv(tensor_name, Rendezvous::Args(), &output, &is_dead);
+
+    string full_key = Rendezvous::CreateKey("/cpu:0", 1, "/cpu:1", tensor_name,
+                                            FrameAndIter(0, 0));
+    Rendezvous::ParsedKey parsed;
+    Status s = Rendezvous::ParseKey(full_key, &parsed);
+    if (s.ok()) {
+      s = rendez->Recv(parsed, Rendezvous::Args(), &output, &is_dead);
+    }
     if (!s.ok() || is_dead) {
       return c > 0;
     }

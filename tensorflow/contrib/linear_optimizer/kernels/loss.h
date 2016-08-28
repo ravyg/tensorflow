@@ -1,4 +1,4 @@
-/* Copyright 2016 Google Inc. All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,12 +26,10 @@ class DualLossUpdater {
   // Compute update dual (alpha), based on a single example. Various strategies
   // can be employed here, like newton step and/or line search or approximate
   // step that decreases the dual sub-optimality.
-  virtual double ComputeUpdatedDual(const double label,
-                                    const double example_weight,
-                                    const double current_dual, const double wx,
-                                    const double weighted_example_norm,
-                                    const double primal_loss,
-                                    const double dual_loss) const = 0;
+  virtual double ComputeUpdatedDual(
+      const int num_partitions, const double label, const double example_weight,
+      const double current_dual, const double wx,
+      const double weighted_example_norm) const = 0;
 
   // Compute dual loss based on the current dual (alpha), example label (y)
   // and example weight (cost).

@@ -1,4 +1,4 @@
-/* Copyright 2015 Google Inc. All Rights Reserved.
+/* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -150,7 +150,7 @@ class SparseTensor {
   // Picks out the dimensions according to `dim_indices`.
   std::vector<int64> PickDims(gtl::ArraySlice<int64> dim_indices) {
     std::vector<int64> res(dim_indices.size());
-    for (int i = 0; i < dim_indices.size(); ++i) {
+    for (size_t i = 0; i < dim_indices.size(); ++i) {
       res[i] = shape_.dim_size(dim_indices[i]);
     }
     return res;
@@ -283,7 +283,7 @@ void SparseTensor::Reorder(const VarDimArray& order) {
   // permutation (the inverse).  This can be calculated with O(1)
   // additional
   // and O(n) time (INVPERM) but we just do the simple thing here.
-  std::vector<int64> permutation(reorder.size());
+  std::vector<size_t> permutation(reorder.size());
   for (std::size_t n = 0; n < reorder.size(); ++n) {
     permutation[reorder[n]] = n;
   }

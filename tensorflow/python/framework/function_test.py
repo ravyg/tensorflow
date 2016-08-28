@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,7 +89,7 @@ class FunctionTest(tf.test.TestCase):
       self.assertEqual(len(gdef.library.function), 1)  # 1 function is defined.
 
       for _ in xrange(10):
-        # Run the graph, which is basicly two function calls.
+        # Run the graph, which is basically two function calls.
         ans_u0, ans_v0, ans_w0, ans_u1, ans_v1, ans_w1 = sess.run([u0, v0, w0,
                                                                    u1, v1, w1])
         self.assertAllEqual(ans_u0, self._mat(10.0))  # 2 * 3 + 4 = 10

@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,9 +18,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.contrib.framework.python.framework import checkpoint_utils
+from tensorflow.contrib.framework.python.ops import variables as contrib_variables
+from tensorflow.contrib.layers.python.layers import embedding_ops
 from tensorflow.contrib.layers.python.layers import feature_column as fc
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import parsing_ops
@@ -32,8 +37,8 @@ from tensorflow.python.platform import tf_logging as logging
 def input_from_feature_columns(columns_to_tensors,
                                feature_columns,
                                weight_collections=None,
-                               name=None,
-                               trainable=True):
+                               trainable=True,
+                               scope=None):
   """A tf.contrib.layer style input layer builder based on FeatureColumns.
 
   Generally a single example in training data is described with feature columns.
@@ -47,23 +52,25 @@ def input_from_feature_columns(columns_to_tensors,
     # Building model for training
     columns_to_tensor = tf.parse_example(...)
     first_layer = input_from_feature_columns(
-        columns_to_tensor,
+        columns_to_tensors=columns_to_tensor,
         feature_columns=feature_columns)
-    second_layer = tf.contrib.layer.fully_connected(first_layer, ...)
+    second_layer = fully_connected(first_layer, ...)
     ...
 
     where feature_columns can be defined as follows:
 
-      query_word = sparse_column_with_hash_bucket(
-        'query_word', hash_bucket_size=int(1e6))
-      query_embedding = embedding_column(query_word, dimension=16)
-      age_bucket = bucketized_column(real_valued_column('age'),
-                                     boundaries=[18, 21, 30, 50, 70])
-      query_age = crossed_column([query_word, age_bucket],
-                                 hash_bucket_size=1e6)
+    occupation = sparse_column_with_hash_bucket(column_name="occupation",
+                                              hash_bucket_size=1000)
+    occupation_emb = embedding_column(sparse_id_column=occupation, dimension=16,
+                                     combiner="sum")
+    age = real_valued_column("age")
+    age_buckets = bucketized_column(
+        source_column=age,
+        boundaries=[18, 25, 30, 35, 40, 45, 50, 55, 60, 65])
+    occupation_x_age = crossed_column(columns=[occupation, age_buckets],
+                                      hash_bucket_size=10000)
 
-      feature_columns=[query_embedding, query_age]
-
+    feature_columns=[occupation_emb, occupation_x_age]
 
   Args:
     columns_to_tensors: A mapping from feature column to tensors. 'string' key
@@ -73,12 +80,9 @@ def input_from_feature_columns(columns_to_tensors,
     feature_columns: A set containing all the feature columns. All items in the
       set should be instances of classes derived by FeatureColumn.
     weight_collections: List of graph collections to which weights are added.
-    name: The name for this operation is used to name operations and to find
-      variables. If specified it must be unique for this scope, otherwise a
-      unique name starting with "fully_connected" will be created.  See
-      `tf.variable_op_scope` for details.
     trainable: If `True` also add variables to the graph collection
       `GraphKeys.TRAINABLE_VARIABLES` (see tf.Variable).
+    scope: Optional scope for variable_scope.
 
   Returns:
     A Tensor which can be consumed by hidden layers in the neural network.
@@ -86,27 +90,90 @@ def input_from_feature_columns(columns_to_tensors,
   Raises:
     ValueError: if FeatureColumn cannot be consumed by a neural network.
   """
-
-  with variable_scope.variable_op_scope(columns_to_tensors.values(), name,
-                                        'input_from_feature_columns'):
+  check_feature_columns(feature_columns)
+  with variable_scope.variable_scope(scope,
+                                     default_name='input_from_feature_columns',
+                                     values=columns_to_tensors.values()):
     output_tensors = []
     transformer = _Transformer(columns_to_tensors)
     if weight_collections:
       weight_collections = list(set(list(weight_collections) +
                                     [ops.GraphKeys.VARIABLES]))
+
     for column in sorted(set(feature_columns), key=lambda x: x.key):
-      transformed_tensor = transformer.transform(column)
-      output_tensors.append(column.to_dnn_input_layer(
-          transformed_tensor, weight_collections, trainable))
+      with variable_scope.variable_scope(None,
+                                         default_name=column.name,
+                                         values=columns_to_tensors.values()):
+        try:
+          transformed_tensor = transformer.transform(column)
+          output_tensors.append(column.to_dnn_input_layer(
+              transformed_tensor, weight_collections, trainable))
+        except ValueError as e:
+          raise ValueError('Error creating input layer for column: {}.\n'
+                           '{}'.format(column.name, e))
     return array_ops.concat(1, output_tensors)
+
+
+def _create_embedding_lookup(column,
+                             columns_to_tensors,
+                             embedding_lookup_arguments,
+                             num_outputs,
+                             trainable,
+                             weight_collections):
+  """Creates variables and returns predictions for linear weights in a model.
+
+  Args:
+   column: the column we're working on.
+   columns_to_tensors: a map from column name to tensors.
+   embedding_lookup_arguments: arguments for embedding lookup.
+   num_outputs: how many outputs.
+   trainable: whether the variable we create is trainable.
+   weight_collections: weights will be placed here.
+
+  Returns:
+  variables: the created embeddings.
+  predictions: the computed predictions.
+  """
+  with variable_scope.variable_scope(
+      None, default_name=column.name, values=columns_to_tensors.values()):
+    variable = contrib_variables.model_variable(
+        name='weights',
+        shape=[embedding_lookup_arguments.vocab_size, num_outputs],
+        dtype=dtypes.float32,
+        initializer=embedding_lookup_arguments.initializer,
+        trainable=trainable,
+        collections=weight_collections)
+    if isinstance(variable, variables.Variable):
+      variable = [variable]
+    else:
+      variable = variable._get_variable_list()  # pylint: disable=protected-access
+    predictions = embedding_ops.safe_embedding_lookup_sparse(
+        variable,
+        embedding_lookup_arguments.input_tensor,
+        sparse_weights=embedding_lookup_arguments.weight_tensor,
+        default_id=0,
+        combiner=embedding_lookup_arguments.combiner,
+        name=column.name + '_weights')
+    return variable, predictions
+
+
+def _maybe_restore_from_checkpoint(checkpoint_path, variable):
+  if checkpoint_path is not None:
+    path, tensor_name = checkpoint_path
+    weights_to_restore = variable
+    if len(variable) == 1:
+      weights_to_restore = variable[0]
+    checkpoint_utils.init_from_checkpoint(path,
+                                          {tensor_name: weights_to_restore})
+
 
 
 def weighted_sum_from_feature_columns(columns_to_tensors,
                                       feature_columns,
                                       num_outputs,
                                       weight_collections=None,
-                                      name=None,
-                                      trainable=True):
+                                      trainable=True,
+                                      scope=None):
   """A tf.contrib.layer style linear prediction builder based on FeatureColumns.
 
   Generally a single example in training data is described with feature columns.
@@ -119,23 +186,25 @@ def weighted_sum_from_feature_columns(columns_to_tensors,
     # Building model for training
     columns_to_tensor = tf.parse_example(...)
     logits = weighted_sum_from_feature_columns(
-        columns_to_tensor,
+        columns_to_tensors=columns_to_tensor,
         feature_columns=feature_columns,
         num_outputs=1)
     loss = tf.nn.sigmoid_cross_entropy_with_logits(logits, labels)
 
     where feature_columns can be defined as follows:
 
-      query_word = sparse_column_with_hash_bucket(
-        'query_word', hash_bucket_size=int(1e6))
-      query_embedding = embedding_column(query_word, dimension=16)
-      age_bucket = bucketized_column(real_valued_column('age'),
-                                     boundaries=[18, 21, 30, 50, 70])
-      query_age = crossed_column([query_word, age_bucket],
-                                 hash_bucket_size=1e6)
+    occupation = sparse_column_with_hash_bucket(column_name="occupation",
+                                              hash_bucket_size=1000)
+    occupation_emb = embedding_column(sparse_id_column=occupation, dimension=16,
+                                     combiner="sum")
+    age = real_valued_column("age")
+    age_buckets = bucketized_column(
+        source_column=age,
+        boundaries=[18, 25, 30, 35, 40, 45, 50, 55, 60, 65])
+    occupation_x_age = crossed_column(columns=[occupation, age_buckets],
+                                      hash_bucket_size=10000)
 
-      feature_columns=[query_embedding, query_age]
-
+    feature_columns=[occupation_emb, occupation_x_age]
 
   Args:
     columns_to_tensors: A mapping from feature column to tensors. 'string' key
@@ -146,12 +215,9 @@ def weighted_sum_from_feature_columns(columns_to_tensors,
       set should be instances of classes derived from FeatureColumn.
     num_outputs: An integer specifying number of outputs. Default value is 1.
     weight_collections: List of graph collections to which weights are added.
-    name: The name for this operation is used to name operations and to find
-      variables. If specified it must be unique for this scope, otherwise a
-      unique name starting with "fully_connected" will be created.  See
-      `tf.variable_op_scope` for details.
     trainable: If `True` also add variables to the graph collection
       `GraphKeys.TRAINABLE_VARIABLES` (see tf.Variable).
+    scope: Optional scope for variable_scope.
 
   Returns:
     A tuple of followings:
@@ -162,26 +228,52 @@ def weighted_sum_from_feature_columns(columns_to_tensors,
   Raises:
     ValueError: if FeatureColumn cannot be used for linear predictions.
   """
-  with variable_scope.variable_op_scope(columns_to_tensors.values(), name,
-                                        'weighted_sum_from_feature_columns'):
+  check_feature_columns(feature_columns)
+  with variable_scope.variable_scope(
+      scope,
+      default_name='weighted_sum_from_feature_columns',
+      values=columns_to_tensors.values()):
     output_tensors = []
     column_to_variable = dict()
     transformer = _Transformer(columns_to_tensors)
     for column in sorted(set(feature_columns), key=lambda x: x.key):
       transformed_tensor = transformer.transform(column)
-      predictions, variable = column.to_weighted_sum(transformed_tensor,
-                                                     num_outputs,
-                                                     weight_collections,
-                                                     trainable)
+      try:
+        embedding_lookup_arguments = column._to_embedding_lookup_arguments(  # pylint: disable=protected-access
+            transformed_tensor)
+        variable, predictions = _create_embedding_lookup(
+            column,
+            columns_to_tensors,
+            embedding_lookup_arguments,
+            num_outputs,
+            trainable,
+            weight_collections)
+      except NotImplementedError:
+        with variable_scope.variable_scope(
+            None,
+            default_name=column.name,
+            values=columns_to_tensors.values()):
+          tensor = column._to_dense_tensor(transformed_tensor)  # pylint: disable=protected-access
+          variable = [contrib_variables.model_variable(
+              name='weight',
+              shape=[tensor.get_shape()[1], num_outputs],
+              initializer=array_ops.zeros_initializer,
+              collections=weight_collections)]
+          predictions = math_ops.matmul(tensor, variable[0], name='matmul')
+      except ValueError as ee:
+        raise ValueError('Error creating weighted sum for column: {}.\n'
+                         '{}'.format(column.name, ee))
       output_tensors.append(predictions)
       column_to_variable[column] = variable
       _log_variable(variable)
+      _maybe_restore_from_checkpoint(column._checkpoint_path(), variable)  # pylint: disable=protected-access
 
     predictions_no_bias = math_ops.add_n(output_tensors)
-    bias = variables.Variable(
-        array_ops.zeros([num_outputs]),
-        collections=fc._add_variable_collection(weight_collections),  # pylint: disable=protected-access
-        name='bias_weight')
+    bias = contrib_variables.model_variable(
+        'bias_weight',
+        shape=[num_outputs],
+        initializer=init_ops.zeros_initializer,
+        collections=fc._add_variable_collection(weight_collections))  # pylint: disable=protected-access
     _log_variable(bias)
     predictions = nn_ops.bias_add(predictions_no_bias, bias)
 
@@ -195,22 +287,30 @@ def parse_feature_columns_from_examples(serialized,
   """Parses tf.Examples to extract tensors for given feature_columns.
 
   This is a wrapper of 'tf.parse_example'. A typical usage is as follows:
-  ```
-  columns_to_tensor = tf.contrib.layers.parse_feature_columns_from_examples(
+
+  ```python
+  columns_to_tensor = parse_feature_columns_from_examples(
       serialized=my_data,
       feature_columns=my_features)
 
   # Where my_features are:
   # Define features and transformations
-  country = sparse_column_with_keys("country", ["US", "BRA", ...])
-  country_embedding = embedding_column(query_word, dimension=3, combiner="sum")
-  query_word = sparse_column_with_hash_bucket(
-    "query_word", hash_bucket_size=int(1e6))
-  query_embedding = embedding_column(query_word, dimension=16, combiner="sum")
-  age_bucket = bucketized_column(real_valued_column("age"),
-                                 boundaries=[18+i*5 for i in range(10)])
+  country = sparse_column_with_keys(column_name="native_country",
+                                    keys=["US", "BRA", ...])
+  country_emb = embedding_column(sparse_id_column=country, dimension=3,
+                                 combiner="sum")
+  occupation = sparse_column_with_hash_bucket(column_name="occupation",
+                                              hash_bucket_size=1000)
+  occupation_emb = embedding_column(sparse_id_column=occupation, dimension=16,
+                                   combiner="sum")
+  occupation_x_country = crossed_column(columns=[occupation, country],
+                                        hash_bucket_size=10000)
+  age = real_valued_column("age")
+  age_buckets = bucketized_column(
+      source_column=age,
+      boundaries=[18, 25, 30, 35, 40, 45, 50, 55, 60, 65])
 
-    my_features = [query_embedding, age_bucket, country_embedding]
+  my_features = [occupation_emb, age_buckets, country_emb]
   ```
 
   Args:
@@ -225,10 +325,10 @@ def parse_feature_columns_from_examples(serialized,
   Returns:
     A `dict` mapping FeatureColumn to `Tensor` and `SparseTensor` values.
   """
-
+  check_feature_columns(feature_columns)
   columns_to_tensors = parsing_ops.parse_example(
       serialized=serialized,
-      features=fc.create_dict_for_parse_example(feature_columns),
+      features=fc.create_feature_spec_for_parsing(feature_columns),
       name=name,
       example_names=example_names)
 
@@ -241,8 +341,10 @@ def parse_feature_columns_from_examples(serialized,
 def _log_variable(variable):
   if isinstance(variable, list):
     for var in variable:
-      logging.info('Created variable %s, with device=%s', var.name, var.device)
-  else:
+      if isinstance(variable, variables.Variable):
+        logging.info('Created variable %s, with device=%s', var.name,
+                     var.device)
+  elif isinstance(variable, variables.Variable):
     logging.info('Created variable %s, with device=%s', variable.name,
                  variable.device)
 
@@ -278,6 +380,26 @@ def infer_real_valued_columns(features):
   return feature_columns
 
 
+def check_feature_columns(feature_columns):
+  """Checks the validity of the set of FeatureColumns.
+
+  Args:
+    feature_columns: A set of instances or subclasses of FeatureColumn.
+
+  Raises:
+    ValueError: If there are duplicate feature column keys.
+  """
+  seen_keys = set()
+  for f in feature_columns:
+    key = f.key
+    if key in seen_keys:
+      raise ValueError('Duplicate feature column key found for column: {}. '
+                       'This usually means that the column is almost identical '
+                       'to another column, and one must be discarded.'.format(
+                           f.name))
+    seen_keys.add(key)
+
+
 class _Transformer(object):
   """Handles all the transformations defined by FeatureColumn if needed.
 
@@ -292,19 +414,22 @@ class _Transformer(object):
   previously transformed columns.
 
   An example usage of Transformer is as follows:
-    query_word = sparse_column_with_hash_bucket(
-      'query_word', hash_bucket_size=int(1e6))
-    age_bucket = bucketized_column(real_valued_column('age'),
-                                   boundaries=[18, 21, 30, 50, 70])
-    query_age = crossed_column([query_word, age_bucket],
-                               hash_bucket_size=1e6)
+
+    occupation = sparse_column_with_hash_bucket(column_name="occupation",
+                                                hash_bucket_size=1000)
+    age = real_valued_column("age")
+    age_buckets = bucketized_column(
+        source_column=age,
+        boundaries=[18, 25, 30, 35, 40, 45, 50, 55, 60, 65])
+    occupation_x_age = crossed_column(columns=[occupation, age_buckets],
+                                      hash_bucket_size=10000)
 
     columns_to_tensor = tf.parse_example(...)
     transformer = Transformer(columns_to_tensor)
 
-    query_age_tensor = transformer.transform(query_age)
-    query_tensor = transformer.transform(query_word)
-    age_bucket_tensor = transformer.transform(age_bucket)
+    occupation_x_age_tensor = transformer.transform(occupation_x_age)
+    occupation_tensor = transformer.transform(occupation)
+    age_buckets_tensor = transformer.transform(age_buckets)
   """
 
   def __init__(self, columns_to_tensors):
